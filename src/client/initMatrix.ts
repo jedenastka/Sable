@@ -33,6 +33,7 @@ import { pushSessionToSW } from '../sw-session';
 import { assertAuthMetadataIssuer, createSessionTokenRefresher } from './oidcTokenRefresher';
 import { revokeOAuthToken } from './oauthTokenRevocation';
 import { clearSecretStorageKeys, cryptoCallbacks } from './secretStorageKeys';
+import { installRustCrypto, rustEngineEnabled } from '../app/crypto/install';
 import type { SlidingSyncDiagnostics } from './slidingSync';
 import {
   markExpandedTimelinesLimited,
@@ -289,9 +290,13 @@ const initializeClient = async (
   });
 
   const syncStorePromise = measureStartupPhase('sync_store', () => indexedDBStore.startup());
-  const cryptoPromise = measureStartupPhase('rust_crypto', () =>
-    mx.initRustCrypto({ cryptoDatabasePrefix })
-  );
+  const cryptoPromise = measureStartupPhase('rust_crypto', async () => {
+    if (await rustEngineEnabled(cryptoDatabasePrefix)) {
+      await installRustCrypto(mx);
+      return;
+    }
+    await mx.initRustCrypto({ cryptoDatabasePrefix });
+  });
   const [syncStoreResult, cryptoResult] = await Promise.allSettled([
     syncStorePromise,
     cryptoPromise,

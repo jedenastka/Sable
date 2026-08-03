@@ -49,6 +49,9 @@ importers:
       '@lottiefiles/dotlottie-web':
         specifier: 0.40.1
         version: 0.40.1
+      '@matrix-org/matrix-sdk-crypto-wasm':
+        specifier: ^18.3.1
+        version: 18.3.1
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.2.0
