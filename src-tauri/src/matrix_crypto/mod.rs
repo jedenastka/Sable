@@ -7,6 +7,7 @@ pub mod cross_signing;
 pub mod devices;
 pub mod dispatch;
 pub mod events;
+pub mod push;
 pub mod requests;
 pub mod rooms;
 pub mod verification;
