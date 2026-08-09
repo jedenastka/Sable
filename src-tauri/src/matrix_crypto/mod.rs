@@ -85,17 +85,50 @@ pub struct EngineInfo {
     pub store_path: String,
 }
 
+/// App Group that the iOS notification service extension shares with the app. An
+/// extension is a separate process and can only reach the store through this container.
+#[cfg(target_os = "ios")]
+pub const APP_GROUP: &str = "group.moe.sable.client";
+
+/// `None` until the App Group entitlement is present in the generated Xcode project,
+/// in which case the caller falls back to the app-local directory.
+#[cfg(target_os = "ios")]
+fn app_group_dir() -> Option<PathBuf> {
+    use objc2_foundation::{NSFileManager, NSString};
+
+    let identifier = NSString::from_str(APP_GROUP);
+    unsafe {
+        let manager = NSFileManager::defaultManager();
+        let url = manager.containerURLForSecurityApplicationGroupIdentifier(&identifier)?;
+        url.path().map(|path| PathBuf::from(path.to_string()))
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn app_group_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Per-account store directory, appended to whichever base directory the platform
+/// exposes to background code.
+pub fn store_subpath(user_id: &str, device_id: &str) -> PathBuf {
+    // `/` and `:` in a user id are not path-safe.
+    let account = account_key(user_id, device_id).replace(['/', ':'], "_");
+    PathBuf::from("matrix-crypto").join(account)
+}
+
 /// Per-account store directory. Resolved here rather than passed in so the
 /// webview never has to know an absolute path, and so the native notification
 /// handler can derive the same location independently.
 fn store_dir(app: &tauri::AppHandle, user_id: &str, device_id: &str) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| format!("resolving app data dir failed: {e}"))?;
-    // `/` and `:` in a user id are not path-safe.
-    let account = account_key(user_id, device_id).replace(['/', ':'], "_");
-    Ok(base.join("matrix-crypto").join(account))
+    let base = match app_group_dir() {
+        Some(shared) => shared,
+        None => app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("resolving app data dir failed: {e}"))?,
+    };
+    Ok(base.join(store_subpath(user_id, device_id)))
 }
 
 /// Opens a store and registers its machine, replacing any machine already open for the
