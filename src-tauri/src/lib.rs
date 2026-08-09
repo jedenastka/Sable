@@ -458,6 +458,8 @@ pub fn run() {
             matrix_crypto::engine_open,
             #[cfg(feature = "matrix-crypto")]
             matrix_crypto::engine_close,
+            #[cfg(feature = "matrix-crypto")]
+            matrix_crypto::engine_wipe,
             share_inbox::share_inbox_drain,
             share_inbox::share_inbox_read,
             share_inbox::share_inbox_clear,

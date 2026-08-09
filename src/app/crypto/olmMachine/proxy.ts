@@ -1,4 +1,5 @@
 import { createDebugLogger } from '$utils/debugLogger';
+import { engineClose } from '$generated/tauri/commands';
 import { graftWasmPrototypes, RustSdkCryptoJs } from './wasmClasses';
 import { engineInvoke, type EngineIdentity } from './engineInvoke';
 import type { HydrationContext } from './hydrate';
@@ -30,6 +31,26 @@ const idValue = (id: string) => ({
   localpart: () => id.replace(/^@/, '').split(':')[0],
 });
 
+type WatchedFlow = {
+  userId: string;
+  request?: Record<string, unknown>;
+  sas?: Record<string, unknown>;
+  qr?: Record<string, unknown>;
+};
+
+const VERIFICATION_MUTATION_PREFIXES = [
+  'verificationRequest.',
+  'sas.',
+  'qr.',
+  'device.requestVerification',
+  'userIdentity.requestVerification',
+  'userIdentity.requestVerificationDm',
+] as const;
+
+const isVerificationMutation = (method: string): boolean =>
+  method === 'receiveSyncChanges' ||
+  VERIFICATION_MUTATION_PREFIXES.some((prefix) => method.startsWith(prefix));
+
 export class OlmMachineProxy {
   roomKeyRequestsEnabled = false;
 
@@ -53,6 +74,8 @@ export class OlmMachineProxy {
 
   readonly #changesCallbacks = new Map<string, Set<() => void>>();
 
+  readonly #watchedFlows = new Map<string, WatchedFlow>();
+
   readonly #hydration: HydrationContext = {
     call: (method, args) => this.#call(method, args),
     queueOutgoing: (label, pending) => {
@@ -68,6 +91,17 @@ export class OlmMachineProxy {
       callbacks.add(callback);
       this.#changesCallbacks.set(flowId, callbacks);
     },
+    trackVerification: (kind, record) => {
+      const flowId = String(record.flowId ?? '');
+      const userId = String(record.otherUserId ?? record.userId ?? '');
+      if (!flowId || !userId) return;
+      const watched = this.#watchedFlows.get(flowId) ?? { userId };
+      watched.userId = userId;
+      if (kind === 'request') watched.request ??= record;
+      if (kind === 'sas') watched.sas ??= record;
+      if (kind === 'qr') watched.qr ??= record;
+      this.#watchedFlows.set(flowId, watched);
+    },
   };
 
   constructor(info: EngineOpenInfo) {
@@ -79,7 +113,80 @@ export class OlmMachineProxy {
     if (this.#closed) {
       throw new Error('Attempt to use a moved value');
     }
-    return graftWasmPrototypes(await engineInvoke(this.#identity, method, args), this.#hydration);
+    const result = graftWasmPrototypes(
+      await engineInvoke(this.#identity, method, args),
+      this.#hydration
+    );
+    if (isVerificationMutation(method)) {
+      const flowId = typeof args.flowId === 'string' ? args.flowId : undefined;
+      await this.#refreshVerificationFlows(flowId);
+    }
+    return result;
+  }
+
+  async #refreshVerificationFlows(onlyFlowId?: string): Promise<void> {
+    const flowIds = onlyFlowId ? [onlyFlowId] : [...this.#watchedFlows.keys()];
+    for (const flowId of flowIds) {
+      // eslint-disable-next-line no-await-in-loop
+      await this.#refreshVerificationFlow(flowId);
+    }
+  }
+
+  async #refreshVerificationFlow(flowId: string): Promise<void> {
+    const watched = this.#watchedFlows.get(flowId);
+    if (!watched) return;
+
+    let raw: Record<string, unknown>;
+    try {
+      raw = (await engineInvoke(this.#identity, 'verificationRequest.state', {
+        userId: watched.userId,
+        flowId,
+      })) as Record<string, unknown>;
+    } catch (error) {
+      proxyLog.error('error', 'Failed to refresh verification state', error);
+      return;
+    }
+
+    if (!raw || typeof raw !== 'object' || raw.className !== 'VerificationRequest') {
+      return;
+    }
+
+    if (watched.request) {
+      patchSnapshot(watched.request, raw, ['className', 'flowId']);
+    }
+
+    const nestedRaw = raw.verification as Record<string, unknown> | null | undefined;
+    if (nestedRaw && typeof nestedRaw === 'object') {
+      if (nestedRaw.className === 'Sas') {
+        if (watched.sas) {
+          patchSnapshot(watched.sas, nestedRaw, ['className', 'flowId']);
+        } else {
+          watched.sas = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
+            string,
+            unknown
+          >;
+        }
+        if (watched.request) {
+          defineMethodField(watched.request, 'getVerification', watched.sas);
+        }
+      } else if (nestedRaw.className === 'Qr') {
+        if (watched.qr) {
+          patchSnapshot(watched.qr, nestedRaw, ['className', 'flowId']);
+        } else {
+          watched.qr = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
+            string,
+            unknown
+          >;
+        }
+        if (watched.request) {
+          defineMethodField(watched.request, 'getVerification', watched.qr);
+        }
+      }
+    } else if (watched.request) {
+      defineMethodField(watched.request, 'getVerification', null);
+    }
+
+    this.emit.verificationChanged(flowId);
   }
 
   get userId() {
@@ -102,11 +209,18 @@ export class OlmMachineProxy {
   }
 
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
+    void engineClose({
+      userId: this.#identity.userId,
+      deviceId: this.#identity.deviceId,
+    }).catch((error) =>
+      proxyLog.error('error', 'Failed to close the Rust crypto engine', error)
+    );
   }
 
   free(): void {
-    this.#closed = true;
+    this.close();
   }
 
   async receiveSyncChanges(
@@ -498,3 +612,29 @@ const toStringArray = (value: unknown): string[] => {
 
 const toRecord = (value: Map<string, number> | Record<string, number>): Record<string, number> =>
   value instanceof Map ? Object.fromEntries(value) : value;
+
+const defineMethodField = (record: Record<string, unknown>, name: string, value: unknown): void => {
+  Object.defineProperty(record, name, {
+    value: () => value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+};
+
+const patchSnapshot = (
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  skip: string[]
+): void => {
+  for (const [key, value] of Object.entries(source)) {
+    if (skip.includes(key) || key === 'verification' || key === 'getVerification') continue;
+    if (typeof value === 'function') continue;
+    Object.defineProperty(target, key, {
+      value: typeof target[key] === 'function' ? () => value : value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+};

@@ -20,6 +20,7 @@ const context = (): HydrationContext & { calls: [string, unknown][] } => {
     },
     queueOutgoing: () => {},
     watchChanges: () => {},
+    trackVerification: () => {},
   };
 };
 
@@ -385,6 +386,7 @@ describe('synchronous verification actions', () => {
     bridge.engineInvoke.mockImplementation(async (_identity, method) => {
       if (method === 'getVerificationRequest') return request;
       if (method === 'verificationRequest.accept') return readyRequest;
+      if (method === 'verificationRequest.state') return request;
       if (method === 'outgoingRequests') return [];
       throw new Error(`unexpected engine call ${method}`);
     });
@@ -435,5 +437,41 @@ describe('synchronous verification actions', () => {
     proxy.emit.verificationChanged('flow');
 
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes verification snapshots after sync and notifies watchers', async () => {
+    const initial = {
+      ...request,
+      phase: RustSdkCryptoJs.VerificationRequestPhase.Requested,
+      isReady: false,
+      verification: null,
+    };
+    const ready = {
+      ...request,
+      phase: RustSdkCryptoJs.VerificationRequestPhase.Ready,
+      isReady: true,
+      verification: null,
+    };
+
+    bridge.engineInvoke.mockImplementation(async (_identity, method) => {
+      if (method === 'getVerificationRequest') return initial;
+      if (method === 'receiveSyncChanges') return [];
+      if (method === 'verificationRequest.state') return ready;
+      throw new Error(`unexpected engine call ${method}`);
+    });
+
+    const proxy = new OlmMachineProxy(info);
+    const inner = (await proxy.getVerificationRequest(
+      '@bob:example.org',
+      'flow'
+    )) as unknown as RustSdkCryptoJs.VerificationRequest;
+    const onChange = vi.fn<() => Promise<void>>();
+    inner.registerChangesCallback(onChange);
+
+    expect(inner.isReady()).toBe(false);
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    expect(onChange).toHaveBeenCalled();
+    expect(inner.isReady()).toBe(true);
+    expect(inner.phase()).toBe(RustSdkCryptoJs.VerificationRequestPhase.Ready);
   });
 });

@@ -39,6 +39,26 @@ impl CryptoEngineState {
             .cloned()
             .ok_or_else(|| format!("no open crypto engine for {user_id}|{device_id}"))
     }
+
+    fn close_account(&self, account: &str) -> Result<bool, String> {
+        if let Some(listeners) = self
+            .listeners
+            .lock()
+            .map_err(|e| e.to_string())?
+            .remove(account)
+        {
+            for listener in listeners {
+                listener.abort();
+            }
+        }
+
+        Ok(self
+            .machines
+            .lock()
+            .map_err(|e| e.to_string())?
+            .remove(account)
+            .is_some())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +107,9 @@ pub async fn engine_open(
         .map_err(|e| e.to_string())?;
     let db_path = dir.join("matrix-sdk-crypto.sqlite3");
 
+    let account = format!("{user_id}|{device_id}");
+    state.close_account(&account)?;
+
     let store = SqliteCryptoStore::open(&db_path, passphrase.as_deref())
         .await
         .map_err(|e| format!("opening crypto store failed: {e}"))?;
@@ -94,7 +117,6 @@ pub async fn engine_open(
         .await
         .map_err(|e| format!("creating OlmMachine failed: {e}"))?;
     let keys = machine.identity_keys();
-    let account = format!("{user_id}|{device_id}");
 
     let listeners = events::spawn(&app, &machine, account.clone());
     state
@@ -124,25 +146,26 @@ pub async fn engine_close(
     user_id: String,
     device_id: String,
 ) -> Result<bool, String> {
+    state.close_account(&format!("{user_id}|{device_id}"))
+}
+
+#[tauri::command]
+pub async fn engine_wipe(
+    app: tauri::AppHandle,
+    state: State<'_, CryptoEngineState>,
+    user_id: String,
+    device_id: String,
+) -> Result<(), String> {
     let account = format!("{user_id}|{device_id}");
+    let _ = state.close_account(&account)?;
 
-    if let Some(listeners) = state
-        .listeners
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&account)
-    {
-        for listener in listeners {
-            listener.abort();
-        }
+    let dir = store_dir(&app, &user_id, &device_id)?;
+    if dir.exists() {
+        tokio::fs::remove_dir_all(&dir)
+            .await
+            .map_err(|e| format!("deleting crypto store failed: {e}"))?;
     }
-
-    Ok(state
-        .machines
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&account)
-        .is_some())
+    Ok(())
 }
 
 #[tauri::command]

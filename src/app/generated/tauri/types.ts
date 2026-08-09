@@ -108,6 +108,12 @@ export interface EngineOpenParams {
   [key: string]: unknown;
 }
 
+export interface EngineWipeParams {
+  userId: string;
+  deviceId: string;
+  [key: string]: unknown;
+}
+
 export interface ExportDiagnosticsParams {
   frontendLogs?: string | null;
   [key: string]: unknown;

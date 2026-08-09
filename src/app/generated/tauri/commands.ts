@@ -46,6 +46,10 @@ export async function engineOpen(params: types.EngineOpenParams): Promise<types.
   return invoke('engine_open', params);
 }
 
+export async function engineWipe(params: types.EngineWipeParams): Promise<void> {
+  return invoke('engine_wipe', params);
+}
+
 export async function exportDiagnostics(params: types.ExportDiagnosticsParams): Promise<string | null> {
   return invoke('export_diagnostics', params);
 }

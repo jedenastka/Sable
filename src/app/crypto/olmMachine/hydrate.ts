@@ -3,8 +3,9 @@ import { scannedQrCodeBytes } from './qrCodeScan';
 
 export type HydrationContext = {
   call: (method: string, args?: Record<string, unknown>) => Promise<unknown>;
-  queueOutgoing: (label: string, pending: Promise<unknown>) => void;
+  queueOutgoing: (label: string, pending: Promise<unknown>, flowId?: string) => void;
   watchChanges: (flowId: string, callback: () => void) => void;
+  trackVerification: (kind: 'request' | 'sas' | 'qr', record: Snapshot) => void;
 };
 
 type Snapshot = Record<string, unknown>;
@@ -37,7 +38,11 @@ const queueAction =
     argsOf?: (args: unknown[]) => Snapshot
   ) =>
   (...args: unknown[]): undefined => {
-    ctx.queueOutgoing(method, ctx.call(method, { ...target, ...argsOf?.(args) }));
+    ctx.queueOutgoing(
+      method,
+      ctx.call(method, { ...target, ...argsOf?.(args) }),
+      String(target.flowId)
+    );
     return undefined;
   };
 
@@ -199,6 +204,9 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
 
     case 'VerificationRequest': {
       const target = flowTarget(record);
+      if (Object.hasOwn(record, 'verification') && !Object.hasOwn(record, 'getVerification')) {
+        define(record, 'getVerification', record.verification);
+      }
       asMethod(
         record,
         'isCancelled',
@@ -212,6 +220,7 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
         'weStarted',
         'getVerification'
       );
+      ctx.trackVerification('request', record);
       watchChanges(record, ctx);
       define(record, 'accept', queueAction(ctx, 'verificationRequest.accept', target));
       define(
@@ -254,6 +263,7 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
         'timedOut',
         'weStarted'
       );
+      ctx.trackVerification('sas', record);
       watchChanges(record, ctx);
       define(record, 'accept', queueAction(ctx, 'sas.accept', target));
       define(record, 'cancel', queueAction(ctx, 'sas.cancel', target));
@@ -280,6 +290,7 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
         'state',
         'weStarted'
       );
+      ctx.trackVerification('qr', record);
       watchChanges(record, ctx);
       const bytes = record.qrCodeBytes;
       define(record, 'toBytes', () =>

@@ -15,6 +15,8 @@ import {
 import { fetch } from '$utils/fetch';
 import { matrixFetch } from './matrixFetch';
 import { clearMediaCache } from '$utils/mediaCache';
+import { isTauri } from '@tauri-apps/api/core';
+import { engineWipe } from '$generated/tauri/commands';
 
 import { clearNavToActivePathStore } from '$state/navToActivePath';
 import type { Session, Sessions, SessionStoreName } from '$state/sessions';
@@ -229,6 +231,16 @@ export const discardSessionStores = async (session: Session): Promise<void> => {
   clearSessionCaches(session);
   const storeName = getSessionStoreName(session);
   await deleteSessionStores(storeName);
+  await wipeNativeCryptoStore(session);
+};
+
+const wipeNativeCryptoStore = async (session: Session): Promise<void> => {
+  if (!isTauri() || !session.deviceId) return;
+  try {
+    await engineWipe({ userId: session.userId, deviceId: session.deviceId });
+  } catch (error) {
+    log.warn('wipeNativeCryptoStore failed', session.userId, error);
+  }
 };
 
 const isMismatch = (err: unknown): boolean => {
@@ -670,6 +682,7 @@ export const logoutClient = async (mx: MatrixClient, session?: Session) => {
     const storeName: SessionStoreName = getSessionStoreName(session);
     await mx.clearStores({ cryptoDatabasePrefix: storeName.rustCryptoPrefix });
     await deleteSessionStores(storeName);
+    await wipeNativeCryptoStore(session);
   } else {
     await mx.clearStores();
     window.localStorage.clear();

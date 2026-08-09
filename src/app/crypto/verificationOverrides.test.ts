@@ -62,9 +62,12 @@ const harness = () => {
 describe('installVerificationOverrides', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    bridge.engineInvoke.mockResolvedValue({
-      request: requestSnapshot,
-      outgoingRequest: outgoingSnapshot,
+    bridge.engineInvoke.mockImplementation(async (_identity, method) => {
+      if (method === 'verificationRequest.state') return requestSnapshot;
+      return {
+        request: requestSnapshot,
+        outgoingRequest: outgoingSnapshot,
+      };
     });
   });
 
@@ -117,6 +120,9 @@ describe('installVerificationOverrides', () => {
       if (method === 'userIdentity.requestVerificationDm') {
         return { request: requestSnapshot, outgoingRequest: null };
       }
+      if (method === 'verificationRequest.state') {
+        return requestSnapshot;
+      }
       throw new Error(`unexpected engine call ${method}`);
     });
 
@@ -124,7 +130,7 @@ describe('installVerificationOverrides', () => {
     const result = await rustCrypto.requestVerificationDM('@bob:example.org', '!room:example.org');
 
     expect(sendVerificationRequestContent).toHaveBeenCalledWith('!room:example.org', content);
-    expect(bridge.engineInvoke).toHaveBeenLastCalledWith(
+    expect(bridge.engineInvoke).toHaveBeenCalledWith(
       expect.anything(),
       'userIdentity.requestVerificationDm',
       {
