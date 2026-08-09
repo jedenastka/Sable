@@ -68,7 +68,10 @@ matrix-sdk = { version = "0.18", default-features = false, features = [
 ], optional = true }
 # `qrcode` is off by default upstream; Sable already supports QR device
 # verification, so the engine needs it for parity with the wasm backend.
-matrix-sdk-crypto = { version = "0.18", features = ["qrcode"], optional = true }
+matrix-sdk-crypto = { version = "0.18", features = [
+  "qrcode",
+  "experimental-push-secrets",
+], optional = true }
 # `bundled` compiles SQLite from source. Android's NDK ships no libsqlite3 to link
 # against at any API level, so without this the aarch64 build fails at link time.
 matrix-sdk-sqlite = { version = "0.18", features = ["crypto-store", "bundled"], optional = true }

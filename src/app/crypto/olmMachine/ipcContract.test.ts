@@ -32,4 +32,10 @@ describe('engine IPC contract', () => {
 
     expect([...called].filter((method) => !handled(method)).toSorted()).toEqual([]);
   });
+
+  it('returns encrypted room content using the wasm JSON-string contract', () => {
+    expect(rust).toMatch(
+      /"encryptRoomEvent" =>[\s\S]*Ok\(Value::String\(encrypted_json\.to_owned\(\)\)\)/
+    );
+  });
 });

@@ -322,8 +322,12 @@ pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<V
                 .encrypt_room_event_raw(&room, &event_type, &content)
                 .await
                 .map_err(|e| format!("encryptRoomEvent failed: {e:?}"))?;
-            serde_json::from_str::<Value>(encrypted.content.json().get())
-                .map_err(|e| format!("encryptRoomEvent: bad encrypted content json: {e}"))
+            let encrypted_json = encrypted.content.json().get();
+            serde_json::from_str::<Value>(encrypted_json)
+                .map_err(|e| format!("encryptRoomEvent: bad encrypted content json: {e}"))?;
+
+            // Match wasm's JSON-string return type.
+            Ok(Value::String(encrypted_json.to_owned()))
         }
 
         "getSecretsFromInbox" => {

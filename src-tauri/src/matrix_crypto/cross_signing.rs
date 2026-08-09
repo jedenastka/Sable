@@ -38,11 +38,7 @@ pub async fn invoke(
         "exportSecretsBundle" => export_secrets_bundle(machine).await,
         "importSecretsBundle" => import_secrets_bundle(machine, args).await,
 
-        // Gated in matrix-sdk-crypto 0.18 behind `experimental-push-secrets`.
-        "pushSecretToVerifiedDevices" => Err("pushSecretToVerifiedDevices: unavailable, \
-             matrix-sdk-crypto gates push_secret_to_verified_devices behind the \
-             `experimental-push-secrets` feature"
-            .to_owned()),
+        "pushSecretToVerifiedDevices" => push_secret(machine, args).await,
 
         _ => return None,
     })
@@ -190,4 +186,21 @@ mod tests {
         assert!(!object.contains_key("self_signing_key"), "{value}");
         assert!(!object.contains_key("userSigningKey"), "{value}");
     }
+}
+
+async fn push_secret(machine: &OlmMachine, args: &Value) -> Result<Value, String> {
+    let name = opt_str_arg(args, "secretName")
+        .ok_or_else(|| "pushSecretToVerifiedDevices: missing `secretName`".to_owned())?;
+
+    let failures = machine
+        .push_secret_to_verified_devices(name.as_str().into())
+        .await
+        .map_err(|e| format!("pushSecretToVerifiedDevices failed: {e}"))?;
+
+    Ok(Value::Array(
+        failures
+            .keys()
+            .map(|device| Value::String(device.to_string()))
+            .collect(),
+    ))
 }

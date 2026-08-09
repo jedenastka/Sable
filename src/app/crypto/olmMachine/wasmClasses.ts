@@ -32,10 +32,23 @@ export const collectStrategyName = (strategy: unknown): string => {
   return 'allDevices';
 };
 
-// Wasm accessors live on the prototype, so JSON would carry only the internal pointer, and a
-// dropped `sharingStrategy` silently means "share room keys with every device".
 const num = (value: unknown) => (typeof value === 'bigint' ? Number(value) : value);
 
+// Read wasm prototype getters before crossing the JSON boundary.
+export const encodeRoomSettings = (settings: unknown): Record<string, unknown> | null => {
+  if (settings === null || typeof settings !== 'object') return null;
+  const s = settings as Record<string, unknown>;
+  return {
+    algorithm: s.algorithm,
+    encryptStateEvents: s.encryptStateEvents,
+    onlyAllowTrustedDevices: s.onlyAllowTrustedDevices,
+    sessionRotationPeriodMs: num(s.sessionRotationPeriodMs),
+    sessionRotationPeriodMessages: num(s.sessionRotationPeriodMessages),
+  };
+};
+
+// Wasm accessors live on the prototype, so JSON would carry only the internal pointer, and a
+// dropped `sharingStrategy` silently means "share room keys with every device".
 export const encodeEncryptionSettings = (settings: unknown): Record<string, unknown> | null => {
   if (settings === null || typeof settings !== 'object') return null;
   const s = settings as Record<string, unknown>;
@@ -51,6 +64,28 @@ export const encodeEncryptionSettings = (settings: unknown): Record<string, unkn
 export const encodeDecryptionSettings = (settings: unknown): Record<string, unknown> => {
   const trust = (settings as Record<string, unknown> | null)?.sender_device_trust_requirement;
   return { senderDeviceTrustRequirement: typeof trust === 'number' ? trust : 0 };
+};
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+export const toMegolmDecryptionError = (error: unknown): unknown => {
+  const description = errorMessage(error);
+  const codes = RustSdkCryptoJs.DecryptionErrorCode;
+  let code = codes.UnableToDecrypt;
+
+  if (description.includes('MissingRoomKey')) code = codes.MissingRoomKey;
+  else if (description.includes('UnknownMessageIndex')) code = codes.UnknownMessageIndex;
+  else if (description.includes('MismatchedIdentityKeys')) code = codes.MismatchedIdentityKeys;
+  else if (description.includes('VerificationViolation')) {
+    code = codes.SenderIdentityVerificationViolation;
+  } else if (description.includes('UnsignedDevice')) code = codes.UnsignedSenderDevice;
+  else if (description.includes('SenderIdentityNotTrusted(None')) code = codes.UnknownSenderDevice;
+  else if (description.includes('MismatchedSender')) code = codes.MismatchedSender;
+
+  const wrapped = { code, description, maybe_withheld: undefined };
+  Object.setPrototypeOf(wrapped, RustSdkCryptoJs.MegolmDecryptionError.prototype);
+  return wrapped;
 };
 
 const hasOwnPrototype = (name: string): boolean => {

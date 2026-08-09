@@ -2,9 +2,11 @@ import * as RustSdkCryptoJs from '@matrix-org/matrix-sdk-crypto-wasm';
 import { describe, expect, it } from 'vitest';
 import {
   encodeDecryptionSettings,
+  encodeRoomSettings,
   encodeEncryptionSettings,
   graftWasmPrototypes,
   keyToBase64,
+  toMegolmDecryptionError,
 } from './wasmClasses';
 import type { HydrationContext } from './hydrate';
 
@@ -19,6 +21,26 @@ describe('keyToBase64', () => {
 
   it('passes through keys the engine already returned as base64', () => {
     expect(keyToBase64('c29tZS1rZXk')).toBe('c29tZS1rZXk');
+  });
+});
+
+describe('toMegolmDecryptionError', () => {
+  it('preserves the missing-room-key type needed by the backup downloader', () => {
+    const error = toMegolmDecryptionError(
+      'decryptRoomEvent failed: MissingRoomKey(None)'
+    ) as RustSdkCryptoJs.MegolmDecryptionError;
+
+    expect(error).toBeInstanceOf(RustSdkCryptoJs.MegolmDecryptionError);
+    expect(error.code).toBe(RustSdkCryptoJs.DecryptionErrorCode.MissingRoomKey);
+    expect(error.maybe_withheld).toBeUndefined();
+  });
+
+  it('uses the generic wasm error code for an unclassified Rust failure', () => {
+    const error = toMegolmDecryptionError(
+      'decryptRoomEvent failed: Store error'
+    ) as RustSdkCryptoJs.MegolmDecryptionError;
+
+    expect(error.code).toBe(RustSdkCryptoJs.DecryptionErrorCode.UnableToDecrypt);
   });
 });
 
@@ -98,5 +120,22 @@ describe('graftWasmPrototypes', () => {
 
     // Reading through the prototype would hit `get id()` with no backing pointer.
     expect(Object.hasOwn(grafted, 'id')).toBe(true);
+  });
+});
+
+describe('encodeRoomSettings', () => {
+  it('reads the wasm accessors that JSON.stringify would drop', () => {
+    const settings = new RustSdkCryptoJs.RoomSettings();
+    settings.onlyAllowTrustedDevices = true;
+    settings.sessionRotationPeriodMs = 604800000;
+    settings.sessionRotationPeriodMessages = 100;
+
+    expect(JSON.parse(JSON.stringify(settings))).not.toHaveProperty('onlyAllowTrustedDevices');
+    expect(encodeRoomSettings(settings)).toMatchObject({
+      algorithm: settings.algorithm,
+      onlyAllowTrustedDevices: true,
+      sessionRotationPeriodMs: 604800000,
+      sessionRotationPeriodMessages: 100,
+    });
   });
 });

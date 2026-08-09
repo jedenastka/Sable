@@ -3,9 +3,11 @@ import { engineClose } from '$generated/tauri/commands';
 import {
   encodeDecryptionSettings,
   encodeEncryptionSettings,
+  encodeRoomSettings,
   graftWasmPrototypes,
   keyToBase64,
   RustSdkCryptoJs,
+  toMegolmDecryptionError,
 } from './wasmClasses';
 import { engineInvoke, type EngineIdentity } from './engineInvoke';
 import type { HydrationContext } from './hydrate';
@@ -336,11 +338,15 @@ export class OlmMachineProxy {
   }
 
   async decryptRoomEvent(event: string, roomId: unknown, ...rest: unknown[]): Promise<unknown> {
-    return this.#call('decryptRoomEvent', {
-      event,
-      roomId: String(roomId),
-      decryptionSettings: encodeDecryptionSettings(rest.at(-1)),
-    });
+    try {
+      return await this.#call('decryptRoomEvent', {
+        event,
+        roomId: String(roomId),
+        decryptionSettings: encodeDecryptionSettings(rest.at(-1)),
+      });
+    } catch (error) {
+      throw toMegolmDecryptionError(error);
+    }
   }
 
   async encryptRoomEvent(roomId: unknown, eventType: string, content: string): Promise<unknown> {
@@ -391,7 +397,10 @@ export class OlmMachineProxy {
   }
 
   async setRoomSettings(roomId: unknown, settings: unknown): Promise<void> {
-    await this.#call('setRoomSettings', { roomId: String(roomId), settings });
+    await this.#call('setRoomSettings', {
+      roomId: String(roomId),
+      settings: encodeRoomSettings(settings),
+    });
   }
 
   async roomKeyCounts(): Promise<unknown> {
@@ -514,14 +523,14 @@ export class OlmMachineProxy {
     progressListener?: (progress: bigint, total: bigint, failures: bigint) => void,
     backupVersion?: string
   ): Promise<unknown> {
+    // RoomId keys compare by identity, so merge entries by their string value.
     const keys: Record<string, Record<string, unknown>> = {};
     if (keysByRoom instanceof Map) {
       for (const [roomId, sessions] of keysByRoom) {
-        const room: Record<string, unknown> = {};
+        const room = (keys[String(roomId)] ??= {});
         if (sessions instanceof Map) {
           for (const [sessionId, key] of sessions) room[String(sessionId)] = key;
         }
-        keys[String(roomId)] = room;
       }
     }
 

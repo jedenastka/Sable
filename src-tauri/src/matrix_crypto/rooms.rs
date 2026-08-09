@@ -353,3 +353,68 @@ pub async fn invoke(
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use matrix_sdk_crypto::CollectStrategy;
+
+    use super::{collect_strategy, encryption_settings};
+
+    #[test]
+    fn parses_every_sharing_strategy_the_webview_can_send() {
+        let cases = [
+            (
+                "identityBasedStrategy",
+                CollectStrategy::IdentityBasedStrategy,
+            ),
+            ("onlyTrustedDevices", CollectStrategy::OnlyTrustedDevices),
+            (
+                "errorOnVerifiedUserProblem",
+                CollectStrategy::ErrorOnVerifiedUserProblem,
+            ),
+            ("allDevices", CollectStrategy::AllDevices),
+        ];
+
+        for (name, expected) in cases {
+            let parsed = collect_strategy(Some(&json!(name)), "shareRoomKey")
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                std::mem::discriminant(&parsed),
+                std::mem::discriminant(&expected),
+                "{name} parsed to the wrong strategy"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_strategy_rather_than_silently_sharing_with_everyone() {
+        let error = collect_strategy(Some(&json!("somethingElse")), "shareRoomKey").unwrap_err();
+        assert!(error.contains("somethingElse"), "{error}");
+    }
+
+    #[test]
+    fn reads_the_settings_shape_the_webview_encodes() {
+        let settings = encryption_settings(
+            &json!({
+                "encryptionSettings": {
+                    "algorithm": 1,
+                    "historyVisibility": 2,
+                    "rotationPeriod": 604_800_000_000u64,
+                    "rotationPeriodMessages": 100,
+                    "sharingStrategy": "onlyTrustedDevices",
+                }
+            }),
+            "shareRoomKey",
+        )
+        .unwrap();
+
+        assert_eq!(settings.rotation_period_msgs, 100);
+        assert_eq!(settings.rotation_period.as_secs(), 604_800);
+        assert_eq!(
+            std::mem::discriminant(&settings.sharing_strategy),
+            std::mem::discriminant(&CollectStrategy::OnlyTrustedDevices),
+        );
+    }
+}
