@@ -92,8 +92,13 @@ export class OlmMachineProxy {
       this.#changesCallbacks.set(flowId, callbacks);
     },
     trackVerification: (kind, record) => {
-      const flowId = String(record.flowId ?? '');
-      const userId = String(record.otherUserId ?? record.userId ?? '');
+      const flowId = typeof record.flowId === 'string' ? record.flowId : '';
+      const userId =
+        typeof record.otherUserId === 'string'
+          ? record.otherUserId
+          : typeof record.userId === 'string'
+            ? record.userId
+            : '';
       if (!flowId || !userId) return;
       const watched = this.#watchedFlows.get(flowId) ?? { userId };
       watched.userId = userId;
@@ -214,9 +219,7 @@ export class OlmMachineProxy {
     void engineClose({
       userId: this.#identity.userId,
       deviceId: this.#identity.deviceId,
-    }).catch((error) =>
-      proxyLog.error('error', 'Failed to close the Rust crypto engine', error)
-    );
+    }).catch((error) => proxyLog.error('error', 'Failed to close the Rust crypto engine', error));
   }
 
   free(): void {
