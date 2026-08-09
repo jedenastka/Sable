@@ -1,4 +1,6 @@
 import { logger } from 'matrix-js-sdk/lib/logger';
+import { CryptoEvent } from 'matrix-js-sdk/lib/crypto-api';
+import { ReEmitter } from 'matrix-js-sdk/lib/ReEmitter';
 import { RustCrypto } from 'matrix-js-sdk/lib/rust-crypto/rust-crypto';
 import { isTauri } from '@tauri-apps/api/core';
 import type { MatrixClient } from '$types/matrix-sdk';
@@ -48,6 +50,32 @@ type InstallResult = {
 };
 
 const MAX_INVITE_ACCEPTANCE_MS_FOR_KEY_BUNDLE = 24 * 60 * 60 * 1000;
+
+const REEMITTED_CRYPTO_EVENTS = [
+  CryptoEvent.VerificationRequestReceived,
+  CryptoEvent.UserTrustStatusChanged,
+  CryptoEvent.KeyBackupStatus,
+  CryptoEvent.KeyBackupSessionsRemaining,
+  CryptoEvent.KeyBackupFailed,
+  CryptoEvent.KeyBackupDecryptionKeyCached,
+  CryptoEvent.KeysChanged,
+  CryptoEvent.DevicesUpdated,
+  CryptoEvent.WillUpdateDevices,
+  CryptoEvent.DehydratedDeviceCreated,
+  CryptoEvent.DehydratedDeviceUploaded,
+  CryptoEvent.RehydrationStarted,
+  CryptoEvent.RehydrationProgress,
+  CryptoEvent.RehydrationCompleted,
+  CryptoEvent.RehydrationError,
+  CryptoEvent.DehydrationKeyCached,
+  CryptoEvent.DehydratedDeviceRotationError,
+];
+
+export const reEmitCryptoEvents = (mx: MatrixClient, rustCrypto: RustCrypto): (() => void) => {
+  const reEmitter = new ReEmitter(mx);
+  reEmitter.reEmit(rustCrypto, REEMITTED_CRYPTO_EVENTS);
+  return () => reEmitter.stopReEmitting(rustCrypto, REEMITTED_CRYPTO_EVENTS);
+};
 
 export const installRustCrypto = async (
   mx: MatrixClient,
@@ -99,6 +127,10 @@ export const installRustCrypto = async (
     mx.cryptoCallbacks
   );
 
+  // `MatrixClient.initRustCrypto` normally wires these events to the client. The native
+  // engine is installed independently, so reproduce that SDK initialization step here.
+  const stopReEmittingCryptoEvents = reEmitCryptoEvents(mx, rustCrypto);
+
   installVerificationOverrides(rustCrypto, proxy);
 
   proxy.registerRoomKeyUpdatedCallback((sessions) =>
@@ -119,6 +151,7 @@ export const installRustCrypto = async (
   const stopEventBridge = await startEngineEventBridge(proxy, { userId, deviceId });
   const stopRustCrypto = rustCrypto.stop.bind(rustCrypto);
   rustCrypto.stop = () => {
+    stopReEmittingCryptoEvents();
     stopEventBridge();
     stopRustCrypto();
   };

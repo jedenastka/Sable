@@ -184,12 +184,12 @@ fn query_keys_for_users(machine: &OlmMachine, args: &Value, method: &str) -> Res
     let (id, request) = machine.query_keys_for_users(users.iter().map(AsRef::as_ref));
     Ok(json!({
         "id": id.to_string(),
-        "type": 1,
+        "type": request_type::KEYS_QUERY,
         "className": "KeysQueryRequest",
-        "body": json!({
-            "timeout": request.timeout,
-            "device_keys": request.device_keys,
-        }).to_string(),
+        "body": super::requests::keys_query_body(
+            &request.timeout,
+            &json!(request.device_keys),
+        ),
     }))
 }
 

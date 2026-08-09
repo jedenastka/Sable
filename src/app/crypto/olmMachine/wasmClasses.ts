@@ -58,6 +58,20 @@ const hasOwnPrototype = (name: string): boolean => {
   return typeof candidate === 'function' && 'prototype' in candidate;
 };
 
+// JSON has no `undefined`, so absent wasm values arrive as `null` and slip past js-sdk's
+// `=== undefined` guards. Rewrite in place: an own property still shadows the wasm getter.
+const nullsToUndefined = (record: Record<string, unknown>): void => {
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== null) continue;
+    Object.defineProperty(record, key, {
+      value: undefined,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+};
+
 // Every payload carries a `className` because js-sdk dispatches on `instanceof`.
 export const graftWasmPrototypes = <T>(value: T, ctx: HydrationContext): T => {
   if (Array.isArray(value)) {
@@ -83,6 +97,7 @@ export const graftWasmPrototypes = <T>(value: T, ctx: HydrationContext): T => {
       prototype: object;
     };
     Object.setPrototypeOf(value, wasmClass.prototype);
+    nullsToUndefined(record);
     hydrate(className, record, ctx);
   }
   return value;

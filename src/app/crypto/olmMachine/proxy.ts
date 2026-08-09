@@ -32,6 +32,11 @@ const base64Key = (key: string) => ({
   toString: () => key,
 });
 
+const toBase64 = (bytes: unknown): string =>
+  bytes instanceof Uint8Array
+    ? btoa(String.fromCharCode(...bytes)).replace(/=+$/, '')
+    : String(bytes);
+
 const idValue = (id: string) => ({
   toString: () => id,
   localpart: () => id.replace(/^@/, '').split(':')[0],
@@ -60,6 +65,7 @@ const VERIFICATION_MUTATION_PREFIXES = [
 
 const isVerificationMutation = (method: string): boolean =>
   method === 'receiveSyncChanges' ||
+  method === 'receiveVerificationEvent' ||
   VERIFICATION_MUTATION_PREFIXES.some((prefix) => method.startsWith(prefix));
 
 export class OlmMachineProxy {
@@ -89,12 +95,16 @@ export class OlmMachineProxy {
 
   readonly #hydration: HydrationContext = {
     call: (method, args) => this.#call(method, args),
-    queueOutgoing: (label, pending) => {
+    queueOutgoing: (label, pending, flowId) => {
       void pending.then(
         (request) => {
           if (request) this.#pending.push(request as { id?: unknown });
         },
-        (error) => proxyLog.error('error', `Rust crypto engine failed on ${label}`, error)
+        (error) => {
+          proxyLog.error('error', `Rust crypto engine failed on ${label}`, error);
+          // js-sdk already resolved this action; nudge the flow so the UI re-reads state.
+          if (flowId) this.emit.verificationChanged(flowId);
+        }
       );
     },
     watchChanges: (flowId, callback) => {
@@ -129,15 +139,12 @@ export class OlmMachineProxy {
     if (this.#closed) {
       throw new Error('Attempt to use a moved value');
     }
-    const result = graftWasmPrototypes(
-      await engineInvoke(this.#identity, method, args),
-      this.#hydration
-    );
+    const rawResult = await engineInvoke(this.#identity, method, args);
     if (isVerificationMutation(method)) {
       const flowId = typeof args.flowId === 'string' ? args.flowId : undefined;
       await this.#refreshVerificationFlows(flowId);
     }
-    return result;
+    return graftWasmPrototypes(rawResult, this.#hydration);
   }
 
   async #refreshVerificationFlows(onlyFlowId?: string): Promise<void> {
@@ -158,8 +165,41 @@ export class OlmMachineProxy {
         userId: watched.userId,
         flowId,
       })) as Record<string, unknown>;
-    } catch (error) {
-      proxyLog.error('error', 'Failed to refresh verification state', error);
+    } catch {
+      // A transitioned flow can move out of Rust's request store before its SAS/QR verifier is
+      // exposed there. Query the verifier store directly and keep the original request wrapper.
+      let verification: Record<string, unknown> | null;
+      try {
+        verification = (await engineInvoke(this.#identity, 'verification.state', {
+          userId: watched.userId,
+          flowId,
+        })) as Record<string, unknown> | null;
+      } catch {
+        return;
+      }
+      if (!verification || typeof verification !== 'object') {
+        const confirmed =
+          typeof watched.sas?.haveWeConfirmed === 'function' && watched.sas.haveWeConfirmed();
+        if (!confirmed) return;
+        if (watched.sas) {
+          patchSnapshot(watched.sas, { isDone: true }, []);
+        }
+        if (watched.request) {
+          patchSnapshot(
+            watched.request,
+            {
+              phase: RustSdkCryptoJs.VerificationRequestPhase.Done,
+              isDone: true,
+              isReady: false,
+            },
+            []
+          );
+        }
+        this.emit.verificationChanged(flowId);
+        return;
+      }
+      this.#patchVerificationSnapshot(flowId, watched, verification);
+      this.emit.verificationChanged(flowId);
       return;
     }
 
@@ -173,26 +213,33 @@ export class OlmMachineProxy {
 
     const nestedRaw = raw.verification as Record<string, unknown> | null | undefined;
     if (nestedRaw && typeof nestedRaw === 'object') {
-      const slot = VERIFICATION_SLOT[nestedRaw.className as string];
-      if (slot) {
-        const current = watched[slot];
-        if (current) {
-          patchSnapshot(current, nestedRaw, ['className', 'flowId']);
-        } else {
-          watched[slot] = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
-            string,
-            unknown
-          >;
-        }
-        if (watched.request) {
-          defineMethodField(watched.request, 'getVerification', watched[slot]);
-        }
-      }
+      this.#patchVerificationSnapshot(flowId, watched, nestedRaw);
     } else if (watched.request) {
       defineMethodField(watched.request, 'getVerification', null);
     }
 
     this.emit.verificationChanged(flowId);
+  }
+
+  #patchVerificationSnapshot(
+    flowId: string,
+    watched: WatchedFlow,
+    snapshot: Record<string, unknown>
+  ): void {
+    const slot = VERIFICATION_SLOT[snapshot.className as string];
+    if (!slot) return;
+    const current = watched[slot];
+    if (current) {
+      patchSnapshot(current, snapshot, ['className', 'flowId']);
+    } else {
+      watched[slot] = graftWasmPrototypes({ ...snapshot }, this.#hydration) as Record<
+        string,
+        unknown
+      >;
+    }
+    if (watched.request) {
+      defineMethodField(watched.request, 'getVerification', watched[slot]);
+    }
   }
 
   get userId() {
@@ -240,6 +287,38 @@ export class OlmMachineProxy {
       oneTimeKeysCounts: toRecord(oneTimeKeysCounts),
       unusedFallbackKeys: unusedFallbackKeys ? toStringArray(unusedFallbackKeys) : null,
     });
+  }
+
+  async receiveVerificationEvent(event: string, roomId: unknown): Promise<void> {
+    await this.#call('receiveVerificationEvent', {
+      event,
+      roomId: String(roomId),
+    });
+
+    let parsed: {
+      event_id?: unknown;
+      type?: unknown;
+      sender?: unknown;
+      content?: { msgtype?: unknown };
+    };
+    try {
+      parsed = JSON.parse(event) as typeof parsed;
+    } catch {
+      return;
+    }
+
+    if (
+      parsed.type === 'm.room.message' &&
+      parsed.content?.msgtype === 'm.key.verification.request' &&
+      typeof parsed.sender === 'string' &&
+      typeof parsed.event_id === 'string'
+    ) {
+      // js-sdk performs a synchronous lookup as soon as this promise resolves.
+      await this.#call('getVerificationRequest', {
+        userId: parsed.sender,
+        flowId: parsed.event_id,
+      });
+    }
   }
 
   async outgoingRequests(): Promise<unknown[]> {
@@ -429,11 +508,33 @@ export class OlmMachineProxy {
     return this.#call('backupRoomKeys');
   }
 
-  async importBackedUpRoomKeys(keys: unknown, backupVersion?: string): Promise<unknown> {
-    return this.#call('importBackedUpRoomKeys', {
+  // js-sdk passes nested Maps, which JSON.stringify flattens to `{}`.
+  async importBackedUpRoomKeys(
+    keysByRoom: unknown,
+    progressListener?: (progress: bigint, total: bigint, failures: bigint) => void,
+    backupVersion?: string
+  ): Promise<unknown> {
+    const keys: Record<string, Record<string, unknown>> = {};
+    if (keysByRoom instanceof Map) {
+      for (const [roomId, sessions] of keysByRoom) {
+        const room: Record<string, unknown> = {};
+        if (sessions instanceof Map) {
+          for (const [sessionId, key] of sessions) room[String(sessionId)] = key;
+        }
+        keys[String(roomId)] = room;
+      }
+    }
+
+    const result = (await this.#call('importBackedUpRoomKeys', {
       keys,
       backupVersion: backupVersion ?? null,
-    });
+    })) as { importedCount?: number; totalCount?: number } | null;
+
+    // The engine imports in one shot, so report completion rather than nothing.
+    const imported = BigInt(result?.importedCount ?? 0);
+    const total = BigInt(result?.totalCount ?? 0);
+    progressListener?.(imported, total, total - imported);
+    return result;
   }
 
   async importExportedRoomKeys(keys: unknown): Promise<unknown> {
@@ -444,17 +545,16 @@ export class OlmMachineProxy {
     return this.#call('exportRoomKeys');
   }
 
-  async getVerificationRequest(userId: unknown, flowId: string): Promise<unknown> {
-    return this.#call('getVerificationRequest', {
-      userId: String(userId),
-      flowId,
-    });
+  getVerificationRequest(userId: unknown, flowId: string): unknown {
+    const watched = this.#watchedFlows.get(flowId);
+    return watched?.userId === String(userId) ? watched.request : undefined;
   }
 
-  async getVerificationRequests(userId: unknown): Promise<unknown[]> {
-    return (await this.#call('getVerificationRequests', {
-      userId: String(userId),
-    })) as unknown[];
+  getVerificationRequests(userId: unknown): unknown[] {
+    const expectedUserId = String(userId);
+    return [...this.#watchedFlows.values()]
+      .filter((watched) => watched.userId === expectedUserId && watched.request)
+      .map((watched) => watched.request);
   }
 
   async requestDeviceVerification(
@@ -547,10 +647,13 @@ export class OlmMachineProxy {
     });
   }
 
-  async receiveRoomKeyBundle(roomId: unknown, bundle: unknown): Promise<void> {
+  // The engine keys the lookup on room + inviter and takes the bundle as base64.
+  async receiveRoomKeyBundle(bundleData: unknown, encryptedBundle: unknown): Promise<void> {
+    const data = (bundleData ?? {}) as { roomId?: unknown; senderUser?: unknown };
     await this.#call('receiveRoomKeyBundle', {
-      roomId: String(roomId),
-      bundle,
+      roomId: String(data.roomId),
+      inviterId: String(data.senderUser),
+      bundle: toBase64(encryptedBundle),
     });
   }
 
@@ -638,6 +741,8 @@ const defineMethodField = (record: Record<string, unknown>, name: string, value:
   });
 };
 
+const SAS_OPTIONAL_FIELDS = new Set(['cancelInfo', 'decimals', 'emoji', 'emojiIndex']);
+
 const patchSnapshot = (
   target: Record<string, unknown>,
   source: Record<string, unknown>,
@@ -646,8 +751,12 @@ const patchSnapshot = (
   for (const [key, value] of Object.entries(source)) {
     if (skip.includes(key) || key === 'verification' || key === 'getVerification') continue;
     if (typeof value === 'function') continue;
+    const normalized =
+      value === null && target instanceof RustSdkCryptoJs.Sas && SAS_OPTIONAL_FIELDS.has(key)
+        ? undefined
+        : value;
     Object.defineProperty(target, key, {
-      value: typeof target[key] === 'function' ? () => value : value,
+      value: typeof target[key] === 'function' ? () => normalized : normalized,
       writable: true,
       enumerable: true,
       configurable: true,

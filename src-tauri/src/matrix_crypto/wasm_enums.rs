@@ -13,6 +13,14 @@ pub mod request_type {
     pub const KEYS_BACKUP: u8 = 6;
 }
 
+/// wasm's `ProcessedToDeviceEventType`.
+pub mod processed_to_device_event_type {
+    pub const DECRYPTED: u8 = 0;
+    pub const UNABLE_TO_DECRYPT: u8 = 1;
+    pub const PLAIN_TEXT: u8 = 2;
+    pub const INVALID: u8 = 3;
+}
+
 /// wasm's `EncryptionAlgorithm`; anything the bindings do not name maps to `Unknown`.
 pub fn encryption_algorithm(algorithm: &EventEncryptionAlgorithm) -> u8 {
     match algorithm {

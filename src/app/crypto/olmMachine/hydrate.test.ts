@@ -111,6 +111,28 @@ describe('Device hydration', () => {
   });
 });
 
+describe('SAS hydration', () => {
+  it('matches WASM optional values before the SAS can be presented', () => {
+    const sas = graftWasmPrototypes(
+      {
+        className: 'Sas',
+        otherUserId: '@bob:example.org',
+        flowId: 'flow',
+        cancelInfo: null,
+        decimals: null,
+        emoji: null,
+        emojiIndex: null,
+      },
+      context()
+    ) as unknown as RustSdkCryptoJs.Sas;
+
+    expect(sas.cancelInfo()).toBeUndefined();
+    expect(sas.decimals()).toBeUndefined();
+    expect(sas.emoji()).toBeUndefined();
+    expect(sas.emojiIndex()).toBeUndefined();
+  });
+});
+
 describe('UserDevices hydration', () => {
   const snapshot = () => ({
     className: 'UserDevices',
@@ -348,6 +370,21 @@ describe('EncryptionInfo hydration', () => {
     expect(encryptionInfo.shieldState(false).color).toBe(RustSdkCryptoJs.ShieldColor.None);
     expect(encryptionInfo.shieldState(true).color).toBe(RustSdkCryptoJs.ShieldColor.Red);
   });
+
+  it('restores the to-device sender verification method', () => {
+    const encryptionInfo = graftWasmPrototypes(
+      {
+        className: 'ToDeviceEncryptionInfo',
+        sender: '@bob:example.org',
+        senderDevice: 'BOBDEVICE',
+        senderCurve25519Key: 'curve',
+        isSenderVerified: true,
+      },
+      context()
+    ) as unknown as RustSdkCryptoJs.ToDeviceEncryptionInfo;
+
+    expect(encryptionInfo.isSenderVerified()).toBe(true);
+  });
 });
 
 describe('synchronous verification actions', () => {
@@ -382,9 +419,39 @@ describe('synchronous verification actions', () => {
     vi.clearAllMocks();
   });
 
+  it('forwards in-room verification events to the native machine', async () => {
+    bridge.engineInvoke.mockResolvedValue(undefined);
+    const proxy = new OlmMachineProxy(info);
+    const event = JSON.stringify({
+      event_id: '$verification',
+      type: 'm.room.message',
+      sender: '@bob:example.org',
+      origin_server_ts: 1700000000000,
+      content: {
+        msgtype: 'm.key.verification.request',
+        from_device: 'BOBDEVICE',
+        methods: ['m.sas.v1'],
+        to: '@alice:example.org',
+      },
+    });
+
+    await proxy.receiveVerificationEvent(event, '!verification:example.org');
+
+    expect(bridge.engineInvoke).toHaveBeenCalledWith(
+      expect.anything(),
+      'receiveVerificationEvent',
+      {
+        event,
+        roomId: '!verification:example.org',
+      }
+    );
+  });
+
   it('returns undefined, queues the request, and acks it locally', async () => {
     bridge.engineInvoke.mockImplementation(async (_identity, method) => {
-      if (method === 'getVerificationRequest') return request;
+      if (method === 'device.requestVerification') {
+        return { request, outgoingRequest: null };
+      }
       if (method === 'verificationRequest.accept') return readyRequest;
       if (method === 'verificationRequest.state') return request;
       if (method === 'outgoingRequests') return [];
@@ -392,10 +459,8 @@ describe('synchronous verification actions', () => {
     });
 
     const proxy = new OlmMachineProxy(info);
-    const inner = (await proxy.getVerificationRequest(
-      '@bob:example.org',
-      'flow'
-    )) as unknown as RustSdkCryptoJs.VerificationRequest;
+    const inner = (await proxy.requestDeviceVerification('@bob:example.org', 'BOBDEVICE', []))
+      .request as unknown as RustSdkCryptoJs.VerificationRequest;
 
     expect(inner.acceptWithMethods([])).toBeUndefined();
     await vi.waitFor(async () => expect(await proxy.outgoingRequests()).toHaveLength(1));
@@ -425,18 +490,49 @@ describe('synchronous verification actions', () => {
   });
 
   it('invokes the stored changes callback through the event bridge', async () => {
-    bridge.engineInvoke.mockResolvedValue(request);
+    bridge.engineInvoke.mockResolvedValue({ request, outgoingRequest: null });
     const proxy = new OlmMachineProxy(info);
-    const inner = (await proxy.getVerificationRequest(
-      '@bob:example.org',
-      'flow'
-    )) as unknown as RustSdkCryptoJs.VerificationRequest;
+    const inner = (await proxy.requestDeviceVerification('@bob:example.org', 'BOBDEVICE', []))
+      .request as unknown as RustSdkCryptoJs.VerificationRequest;
     const onChange = vi.fn<() => Promise<void>>();
 
     inner.registerChangesCallback(onChange);
     proxy.emit.verificationChanged('flow');
 
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates an incoming verification request atomically with its processed event', async () => {
+    const incoming = {
+      className: 'PlainTextToDeviceEvent',
+      type: RustSdkCryptoJs.ProcessedToDeviceEventType.PlainText,
+      rawEvent: JSON.stringify({
+        type: 'm.key.verification.request',
+        sender: '@bob:example.org',
+        content: { transaction_id: 'flow' },
+      }),
+      verificationRequest: request,
+    };
+    bridge.engineInvoke.mockImplementation(async (_identity, method) => {
+      if (method === 'receiveSyncChanges') return [incoming];
+      throw new Error(`unexpected engine call ${method}`);
+    });
+
+    const proxy = new OlmMachineProxy(info);
+    const processed = (await proxy.receiveSyncChanges(
+      JSON.stringify([JSON.parse(incoming.rawEvent)]),
+      { changed: [], left: [] },
+      {}
+    )) as Array<{ verificationRequest: RustSdkCryptoJs.VerificationRequest }>;
+
+    const [first] = processed;
+    expect(first).toBeDefined();
+    if (!first) throw new Error('missing processed verification request');
+    expect(first.verificationRequest).toBeInstanceOf(RustSdkCryptoJs.VerificationRequest);
+    expect(proxy.getVerificationRequest('@bob:example.org', 'flow')).toBe(
+      first.verificationRequest
+    );
+    expect(bridge.engineInvoke).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes verification snapshots after sync and notifies watchers', async () => {
@@ -453,18 +549,35 @@ describe('synchronous verification actions', () => {
       verification: null,
     };
 
+    let receiveCount = 0;
     bridge.engineInvoke.mockImplementation(async (_identity, method) => {
-      if (method === 'getVerificationRequest') return initial;
-      if (method === 'receiveSyncChanges') return [];
+      if (method === 'receiveSyncChanges') {
+        receiveCount += 1;
+        return receiveCount === 1
+          ? [
+              {
+                className: 'PlainTextToDeviceEvent',
+                type: RustSdkCryptoJs.ProcessedToDeviceEventType.PlainText,
+                rawEvent: JSON.stringify({
+                  type: 'm.key.verification.request',
+                  sender: '@bob:example.org',
+                  content: { transaction_id: 'flow' },
+                }),
+                verificationRequest: initial,
+              },
+            ]
+          : [];
+      }
       if (method === 'verificationRequest.state') return ready;
       throw new Error(`unexpected engine call ${method}`);
     });
 
     const proxy = new OlmMachineProxy(info);
-    const inner = (await proxy.getVerificationRequest(
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    const inner = proxy.getVerificationRequest(
       '@bob:example.org',
       'flow'
-    )) as unknown as RustSdkCryptoJs.VerificationRequest;
+    ) as RustSdkCryptoJs.VerificationRequest;
     const onChange = vi.fn<() => Promise<void>>();
     inner.registerChangesCallback(onChange);
 
@@ -473,5 +586,165 @@ describe('synchronous verification actions', () => {
     expect(onChange).toHaveBeenCalled();
     expect(inner.isReady()).toBe(true);
     expect(inner.phase()).toBe(RustSdkCryptoJs.VerificationRequestPhase.Ready);
+  });
+
+  it('retains verification watchers across a transient missing native request', async () => {
+    const initial = {
+      ...request,
+      phase: RustSdkCryptoJs.VerificationRequestPhase.Requested,
+      isReady: false,
+      verification: null,
+    };
+    const ready = {
+      ...request,
+      phase: RustSdkCryptoJs.VerificationRequestPhase.Ready,
+      isReady: true,
+      verification: null,
+    };
+
+    let receiveCount = 0;
+    let stateCount = 0;
+    bridge.engineInvoke.mockImplementation(async (_identity, method) => {
+      if (method === 'receiveSyncChanges') {
+        receiveCount += 1;
+        return receiveCount === 1
+          ? [
+              {
+                className: 'PlainTextToDeviceEvent',
+                type: RustSdkCryptoJs.ProcessedToDeviceEventType.PlainText,
+                rawEvent: JSON.stringify({
+                  type: 'm.key.verification.request',
+                  sender: '@bob:example.org',
+                  content: { transaction_id: 'flow' },
+                }),
+                verificationRequest: initial,
+              },
+            ]
+          : [];
+      }
+      if (method === 'verificationRequest.state') {
+        stateCount += 1;
+        if (stateCount === 1) throw new Error('request temporarily transitioning');
+        return ready;
+      }
+      throw new Error(`unexpected engine call ${method}`);
+    });
+
+    const proxy = new OlmMachineProxy(info);
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    const inner = proxy.getVerificationRequest(
+      '@bob:example.org',
+      'flow'
+    ) as RustSdkCryptoJs.VerificationRequest;
+    const onChange = vi.fn<() => Promise<void>>();
+    inner.registerChangesCallback(onChange);
+
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    expect(proxy.getVerificationRequest('@bob:example.org', 'flow')).toBe(inner);
+    expect(onChange).not.toHaveBeenCalled();
+
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(inner.isReady()).toBe(true);
+  });
+
+  it('loads SAS from the verifier store after Rust transitions the request out', async () => {
+    const initial = {
+      ...request,
+      phase: RustSdkCryptoJs.VerificationRequestPhase.Ready,
+      isReady: true,
+      verification: null,
+    };
+    const sas = {
+      className: 'Sas',
+      userId: '@alice:example.org',
+      deviceId: 'ALICE',
+      otherUserId: '@bob:example.org',
+      otherDeviceId: 'BOBDEVICE',
+      flowId: 'flow',
+      roomId: null,
+      weStarted: false,
+      isSelfVerification: false,
+      startedFromRequest: true,
+      supportsEmoji: true,
+      haveWeConfirmed: false,
+      hasBeenAccepted: true,
+      canBePresented: true,
+      timedOut: false,
+      isDone: false,
+      isCancelled: false,
+      cancelInfo: null,
+      emoji: [{ symbol: '🐶', description: 'Dog' }],
+      emojiIndex: [0],
+      decimals: [1, 2, 3],
+    };
+    const pendingSas = {
+      ...sas,
+      canBePresented: false,
+      cancelInfo: null,
+      emoji: null,
+      emojiIndex: null,
+      decimals: null,
+    };
+    const confirmedSas = { ...sas, haveWeConfirmed: true };
+
+    let receiveCount = 0;
+    let verificationStateCount = 0;
+    bridge.engineInvoke.mockImplementation(async (_identity, method) => {
+      if (method === 'receiveSyncChanges') {
+        receiveCount += 1;
+        return receiveCount === 1
+          ? [
+              {
+                className: 'PlainTextToDeviceEvent',
+                type: RustSdkCryptoJs.ProcessedToDeviceEventType.PlainText,
+                rawEvent: JSON.stringify({
+                  type: 'm.key.verification.request',
+                  sender: '@bob:example.org',
+                  content: { transaction_id: 'flow' },
+                }),
+                verificationRequest: initial,
+              },
+            ]
+          : [];
+      }
+      if (method === 'verificationRequest.state') {
+        throw new Error('request transitioned to verification store');
+      }
+      if (method === 'verification.state') {
+        verificationStateCount += 1;
+        if (verificationStateCount === 1) return pendingSas;
+        if (verificationStateCount === 2) return confirmedSas;
+        return null;
+      }
+      throw new Error(`unexpected engine call ${method}`);
+    });
+
+    const proxy = new OlmMachineProxy(info);
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    const inner = proxy.getVerificationRequest(
+      '@bob:example.org',
+      'flow'
+    ) as RustSdkCryptoJs.VerificationRequest;
+    const onChange = vi.fn<() => Promise<void>>();
+    inner.registerChangesCallback(onChange);
+
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    const verification = inner.getVerification() as RustSdkCryptoJs.Sas;
+    expect(verification).toBeInstanceOf(RustSdkCryptoJs.Sas);
+    expect(verification.canBePresented()).toBe(false);
+    expect(verification.emoji()).toBeUndefined();
+    expect(verification.decimals()).toBeUndefined();
+
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(verification.canBePresented()).toBe(true);
+    expect(verification.emoji()).toEqual([{ symbol: '🐶', description: 'Dog' }]);
+
+    await proxy.receiveSyncChanges('[]', { changed: [], left: [] }, {});
+    expect(onChange).toHaveBeenCalledTimes(3);
+    expect(verification.isDone()).toBe(true);
+    expect(inner.isDone()).toBe(true);
+    expect(inner.phase()).toBe(RustSdkCryptoJs.VerificationRequestPhase.Done);
   });
 });

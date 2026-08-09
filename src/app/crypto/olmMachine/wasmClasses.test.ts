@@ -1,6 +1,12 @@
 import * as RustSdkCryptoJs from '@matrix-org/matrix-sdk-crypto-wasm';
 import { describe, expect, it } from 'vitest';
-import { encodeDecryptionSettings, encodeEncryptionSettings, keyToBase64 } from './wasmClasses';
+import {
+  encodeDecryptionSettings,
+  encodeEncryptionSettings,
+  graftWasmPrototypes,
+  keyToBase64,
+} from './wasmClasses';
+import type { HydrationContext } from './hydrate';
 
 describe('keyToBase64', () => {
   it('reads key material through toBase64 rather than String()', () => {
@@ -63,5 +69,34 @@ describe('encodeDecryptionSettings', () => {
     expect(encodeDecryptionSettings(undefined)).toEqual({
       senderDeviceTrustRequirement: RustSdkCryptoJs.TrustRequirement.Untrusted,
     });
+  });
+});
+
+describe('graftWasmPrototypes', () => {
+  const ctx: HydrationContext = {
+    call: async () => undefined,
+    queueOutgoing: () => {},
+    watchChanges: () => {},
+    trackVerification: () => {},
+  };
+
+  it("turns nulls into undefined so js-sdk's `=== undefined` guards fire", () => {
+    const grafted = graftWasmPrototypes(
+      { className: 'SignatureUploadRequest', id: null, body: '{}' },
+      ctx
+    ) as { id?: unknown; body?: unknown };
+
+    expect(grafted.id).toBeUndefined();
+    expect(grafted.body).toBe('{}');
+  });
+
+  it('keeps the key as an own property so the wasm getter stays shadowed', () => {
+    const grafted = graftWasmPrototypes(
+      { className: 'SignatureUploadRequest', id: null, body: '{}' },
+      ctx
+    );
+
+    // Reading through the prototype would hit `get id()` with no backing pointer.
+    expect(Object.hasOwn(grafted, 'id')).toBe(true);
   });
 });

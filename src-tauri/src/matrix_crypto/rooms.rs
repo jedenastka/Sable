@@ -266,10 +266,10 @@ pub async fn invoke(
                     "type": request_type::KEYS_CLAIM,
                     "className": "KeysClaimRequest",
                     "id": txn_id.to_string(),
-                    "body": json!({
-                        "timeout": request.timeout,
-                        "one_time_keys": request.one_time_keys,
-                    }).to_string(),
+                    "body": super::requests::keys_claim_body(
+                        &request.timeout,
+                        &json!(request.one_time_keys),
+                    ),
                 })),
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(format!("getMissingSessions failed: {e}")),
@@ -320,6 +320,8 @@ pub async fn invoke(
                     };
                     let (lax, strict) = shield_states_json(&info.verification_state);
                     Ok(json!({
+                        // Without this js-sdk's `shieldState()` call hits a plain object.
+                        "className": "EncryptionInfo",
                         "sender": info.sender.to_string(),
                         "senderDevice": info.sender_device.as_ref().map(ToString::to_string),
                         "senderCurve25519Key": curve25519_key,

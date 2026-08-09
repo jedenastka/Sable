@@ -4,18 +4,149 @@
 
 use std::collections::BTreeMap;
 
-use matrix_sdk::deserialized_responses::AlgorithmInfo;
+use matrix_sdk::deserialized_responses::{
+    AlgorithmInfo, ProcessedToDeviceEvent, VerificationState,
+};
 use matrix_sdk::ruma::api::client::sync::sync_events::DeviceLists;
 use matrix_sdk::ruma::events::secret::request::SecretName;
-use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{DeviceKeyAlgorithm, OneTimeKeyAlgorithm, UInt, UserId};
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
+use matrix_sdk_crypto::types::events::ToDeviceEvents;
 use matrix_sdk_crypto::{EncryptionSyncChanges, OlmMachine};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::args::{caller_decryption_settings, decryption_settings, room_id, str_arg};
 use super::requests::{mark_request_sent, outgoing_requests};
+use super::wasm_enums::processed_to_device_event_type;
+
+#[derive(Serialize)]
+#[serde(tag = "className")]
+enum ProcessedToDeviceEventSnapshot<'a> {
+    DecryptedToDeviceEvent {
+        #[serde(rename = "type")]
+        event_type: u8,
+        #[serde(rename = "rawEvent")]
+        raw_event: &'a str,
+        #[serde(rename = "encryptionInfo")]
+        encryption_info: ToDeviceEncryptionInfoSnapshot,
+    },
+    UTDToDeviceEvent {
+        #[serde(rename = "type")]
+        event_type: u8,
+        #[serde(rename = "rawEvent")]
+        raw_event: &'a str,
+    },
+    PlainTextToDeviceEvent {
+        #[serde(rename = "type")]
+        event_type: u8,
+        #[serde(rename = "rawEvent")]
+        raw_event: &'a str,
+    },
+    InvalidToDeviceEvent {
+        #[serde(rename = "type")]
+        event_type: u8,
+        #[serde(rename = "rawEvent")]
+        raw_event: &'a str,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "className")]
+enum ToDeviceEncryptionInfoSnapshot {
+    ToDeviceEncryptionInfo {
+        sender: String,
+        #[serde(rename = "senderDevice")]
+        sender_device: Option<String>,
+        #[serde(rename = "senderCurve25519Key")]
+        sender_curve25519_key: String,
+        #[serde(rename = "isSenderVerified")]
+        is_sender_verified: bool,
+    },
+}
+
+fn processed_to_device_event_json(
+    event: &ProcessedToDeviceEvent,
+    verification_request: Option<Value>,
+) -> Result<Value, String> {
+    let raw_event = event.as_raw().json().get();
+
+    let snapshot = match event {
+        ProcessedToDeviceEvent::Decrypted {
+            encryption_info, ..
+        } => {
+            let sender_curve25519_key = match &encryption_info.algorithm_info {
+                AlgorithmInfo::OlmV1Curve25519AesSha2 {
+                    curve25519_public_key_base64,
+                } => curve25519_public_key_base64.as_str(),
+                _ => {
+                    return Err(
+                        "receiveSyncChanges: decrypted to-device event did not use Olm v1"
+                            .to_owned(),
+                    )
+                }
+            };
+
+            ProcessedToDeviceEventSnapshot::DecryptedToDeviceEvent {
+                event_type: processed_to_device_event_type::DECRYPTED,
+                raw_event,
+                encryption_info: ToDeviceEncryptionInfoSnapshot::ToDeviceEncryptionInfo {
+                    sender: encryption_info.sender.to_string(),
+                    sender_device: encryption_info
+                        .sender_device
+                        .as_ref()
+                        .map(ToString::to_string),
+                    sender_curve25519_key: sender_curve25519_key.to_owned(),
+                    is_sender_verified: matches!(
+                        encryption_info.verification_state,
+                        VerificationState::Verified
+                    ),
+                },
+            }
+        }
+        ProcessedToDeviceEvent::UnableToDecrypt { .. } => {
+            ProcessedToDeviceEventSnapshot::UTDToDeviceEvent {
+                event_type: processed_to_device_event_type::UNABLE_TO_DECRYPT,
+                raw_event,
+            }
+        }
+        ProcessedToDeviceEvent::PlainText(_) => {
+            ProcessedToDeviceEventSnapshot::PlainTextToDeviceEvent {
+                event_type: processed_to_device_event_type::PLAIN_TEXT,
+                raw_event,
+            }
+        }
+        ProcessedToDeviceEvent::Invalid(_) => {
+            ProcessedToDeviceEventSnapshot::InvalidToDeviceEvent {
+                event_type: processed_to_device_event_type::INVALID,
+                raw_event,
+            }
+        }
+    };
+
+    let mut value = serde_json::to_value(snapshot)
+        .map_err(|e| format!("receiveSyncChanges: failed to serialize processed event: {e}"))?;
+    if let Some(request) = verification_request {
+        value["verificationRequest"] = request;
+    }
+    Ok(value)
+}
+
+fn verification_request_snapshot(
+    machine: &OlmMachine,
+    event: &ProcessedToDeviceEvent,
+) -> Option<Value> {
+    let ToDeviceEvents::KeyVerificationRequest(event) =
+        event.as_raw().deserialize_as::<ToDeviceEvents>().ok()?
+    else {
+        return None;
+    };
+    machine
+        .get_verification_request(&event.sender, &event.content.transaction_id)
+        .map(|request| super::verification::request_state(&request))
+}
 
 pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<Value, String> {
     match method {
@@ -112,19 +243,33 @@ pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<V
                 .await
                 .map_err(|e| format!("receiveSyncChanges failed: {e}"))?;
 
-            Ok(Value::Array(
-                processed
-                    .iter()
-                    .map(|event| {
-                        serde_json::from_str::<Value>(event.to_raw().json().get())
-                            .unwrap_or(Value::Null)
-                    })
-                    .collect(),
-            ))
+            processed
+                .iter()
+                .map(|event| {
+                    processed_to_device_event_json(
+                        event,
+                        verification_request_snapshot(machine, event),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
         }
 
         "outgoingRequests" => outgoing_requests(machine).await,
         "markRequestAsSent" => mark_request_sent(machine, &args).await,
+
+        "receiveVerificationEvent" => {
+            let room = room_id(&args, method, "roomId")?;
+            let event_json = str_arg(&args, method, "event")?;
+            let event: AnySyncMessageLikeEvent = serde_json::from_str(&event_json)
+                .map_err(|e| format!("receiveVerificationEvent: bad event json: {e}"))?;
+
+            machine
+                .receive_verification_event(&event.into_full_event(room))
+                .await
+                .map_err(|e| format!("receiveVerificationEvent failed: {e}"))?;
+            Ok(Value::Null)
+        }
 
         "decryptRoomEvent" => {
             let room = room_id(&args, method, "roomId")?;
@@ -152,14 +297,17 @@ pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<V
                 _ => (None, None),
             };
 
+            // Names follow wasm's `DecryptedRoomEvent`; `event` is a JSON string, not an object.
             Ok(json!({
-                "clearEvent": serde_json::from_str::<Value>(decrypted.event.json().get())
-                    .map_err(|e| format!("decryptRoomEvent: bad clear event json: {e}"))?,
+                "className": "DecryptedRoomEvent",
+                "event": decrypted.event.json().get(),
+                "sender": info.sender.to_string(),
+                "senderDevice": info.sender_device.as_ref().map(ToString::to_string),
                 "senderCurve25519Key": sender_curve25519_key,
-                "claimedEd25519Key": claimed_ed25519_key,
+                "senderClaimedEd25519Key": claimed_ed25519_key,
+                "forwarder": Value::Null,
+                "forwarderDevice": Value::Null,
                 "forwardingCurve25519KeyChain": Vec::<String>::new(),
-                "verificationState": format!("{:?}", info.verification_state),
-                "sessionId": info.session_id().map(str::to_owned),
             }))
         }
         "encryptRoomEvent" => {
@@ -257,5 +405,30 @@ pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<V
                 "OlmMachine method not implemented by the Rust engine: {other}"
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::ruma::events::AnyToDeviceEvent;
+
+    use super::*;
+
+    #[test]
+    fn plaintext_to_device_event_uses_the_wasm_wrapper_shape() {
+        let raw_json = r#"{"type":"m.test","sender":"@alice:example.org","content":{}}"#;
+        let raw: Raw<AnyToDeviceEvent> = serde_json::from_str(raw_json).unwrap();
+
+        let value =
+            processed_to_device_event_json(&ProcessedToDeviceEvent::PlainText(raw), None).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "className": "PlainTextToDeviceEvent",
+                "type": processed_to_device_event_type::PLAIN_TEXT,
+                "rawEvent": raw_json,
+            })
+        );
     }
 }

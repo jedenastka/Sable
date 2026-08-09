@@ -71,10 +71,7 @@ matrix-sdk = { version = "0.18", default-features = false, features = [
 matrix-sdk-crypto = { version = "0.18", features = ["qrcode"], optional = true }
 # `bundled` compiles SQLite from source. Android's NDK ships no libsqlite3 to link
 # against at any API level, so without this the aarch64 build fails at link time.
-matrix-sdk-sqlite = { version = "0.18", features = [
-  "crypto-store",
-  "bundled",
-], optional = true }
+matrix-sdk-sqlite = { version = "0.18", features = ["crypto-store", "bundled"], optional = true }
 http = { version = "1", optional = true }
 
 tauri-plugin-log = "2.9.0"

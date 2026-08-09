@@ -3,11 +3,24 @@
 use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
 use matrix_sdk_crypto::types::SecretsBundle;
 use matrix_sdk_crypto::{CrossSigningKeyExport, OlmMachine};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use super::wasm_enums::request_type::{
     KEYS_UPLOAD as KEYS_UPLOAD_REQUEST_TYPE, SIGNATURE_UPLOAD as SIGNATURE_UPLOAD_REQUEST_TYPE,
 };
+
+/// Absent keys are omitted, not null: js-sdk gates on `!== undefined` and would otherwise
+/// store a null into 4S. The mixed casing is wasm's own, not a typo.
+#[derive(Serialize)]
+struct CrossSigningKeyExportSnapshot {
+    #[serde(rename = "masterKey", skip_serializing_if = "Option::is_none")]
+    master_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    self_signing_key: Option<String>,
+    #[serde(rename = "userSigningKey", skip_serializing_if = "Option::is_none")]
+    user_signing_key: Option<String>,
+}
 
 fn opt_str_arg(args: &Value, field: &str) -> Option<String> {
     args.get(field).and_then(Value::as_str).map(str::to_owned)
@@ -85,6 +98,7 @@ async fn bootstrap(machine: &OlmMachine, args: &Value) -> Result<Value, String> 
         // No `id`: that is how js-sdk knows to skip `markRequestAsSent`.
         "uploadSigningKeysRequest": {
             "className": "UploadSigningKeysRequest",
+            "id": Value::Null,
             "body": Value::Object(signing_keys_body).to_string(),
         },
         "uploadSignaturesRequest": {
@@ -103,11 +117,12 @@ async fn export_keys(machine: &OlmMachine) -> Result<Value, String> {
         .map_err(|e| format!("exportCrossSigningKeys failed: {e}"))?;
 
     Ok(match export {
-        Some(export) => json!({
-            "masterKey": export.master_key,
-            "self_signing_key": export.self_signing_key,
-            "userSigningKey": export.user_signing_key,
-        }),
+        Some(export) => serde_json::to_value(CrossSigningKeyExportSnapshot {
+            master_key: export.master_key.clone(),
+            self_signing_key: export.self_signing_key.clone(),
+            user_signing_key: export.user_signing_key.clone(),
+        })
+        .map_err(|e| format!("exportCrossSigningKeys: serialising the export failed: {e}"))?,
         None => Value::Null,
     })
 }
@@ -155,4 +170,24 @@ async fn import_secrets_bundle(machine: &OlmMachine, args: &Value) -> Result<Val
         .await
         .map_err(|e| format!("importSecretsBundle failed: {e}"))?;
     Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CrossSigningKeyExportSnapshot;
+
+    #[test]
+    fn absent_keys_are_omitted_so_null_is_never_stored_in_secret_storage() {
+        let value = serde_json::to_value(CrossSigningKeyExportSnapshot {
+            master_key: Some("master".to_owned()),
+            self_signing_key: None,
+            user_signing_key: None,
+        })
+        .unwrap();
+
+        let object = value.as_object().unwrap();
+        assert_eq!(object.get("masterKey").unwrap(), "master");
+        assert!(!object.contains_key("self_signing_key"), "{value}");
+        assert!(!object.contains_key("userSigningKey"), "{value}");
+    }
 }

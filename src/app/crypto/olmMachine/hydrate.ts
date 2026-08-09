@@ -88,9 +88,12 @@ const flowTarget = (record: Snapshot): Snapshot => ({
 });
 
 const watchChanges = (record: Snapshot, ctx: HydrationContext): void => {
-  define(record, 'registerChangesCallback', (callback: () => void) =>
-    ctx.watchChanges(String(record.flowId), callback)
-  );
+  define(record, 'registerChangesCallback', (callback: () => void) => {
+    ctx.watchChanges(String(record.flowId), callback);
+    // js-sdk builds its verifier inside `onChange` and never calls it from the constructor,
+    // so an already-transitioned snapshot would leave `phase` throwing "no verifier".
+    if (record.verification) queueMicrotask(callback);
+  });
 };
 
 const qrCodeBytes = (data: unknown): Uint8Array => {
@@ -246,6 +249,9 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
 
     case 'Sas': {
       const target = flowTarget(record);
+      for (const optional of ['cancelInfo', 'decimals', 'emoji', 'emojiIndex']) {
+        if (record[optional] === null) record[optional] = undefined;
+      }
       asMethod(
         record,
         'canBePresented',
@@ -317,6 +323,10 @@ export const hydrate = (className: string, record: Snapshot, ctx: HydrationConte
       define(record, 'shieldState', (isStrict: boolean) => (isStrict ? strict : lax));
       break;
     }
+
+    case 'ToDeviceEncryptionInfo':
+      asMethod(record, 'isSenderVerified');
+      break;
 
     case 'BackupKeys': {
       const base64 = record.decryptionKeyBase64;

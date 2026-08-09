@@ -366,6 +366,7 @@ async fn keys_for_upload(
     // No `id`: that is how js-sdk knows to skip `markRequestAsSent`.
     Ok(json!({
         "className": "PutDehydratedDeviceRequest",
+        "id": Value::Null,
         "body": body.to_string(),
     }))
 }

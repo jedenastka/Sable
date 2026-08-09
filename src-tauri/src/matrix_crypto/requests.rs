@@ -14,9 +14,62 @@ use matrix_sdk::ruma::api::IncomingResponse as _;
 use matrix_sdk::ruma::events::MessageLikeEventContent as _;
 use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
 use matrix_sdk_crypto::OlmMachine;
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::wasm_enums::request_type;
+
+/// Declared with ruma's serde attributes rather than built by hand: `json!` would emit
+/// `{"secs":10,"nanos":0}` for a `Duration` where the wire format is milliseconds.
+#[derive(Serialize)]
+pub(super) struct KeysClaimBody<'a> {
+    #[serde(with = "matrix_sdk::ruma::serde::duration::opt_ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout: &'a Option<std::time::Duration>,
+    one_time_keys: &'a Value,
+}
+
+pub(super) fn keys_claim_body(
+    timeout: &Option<std::time::Duration>,
+    one_time_keys: &Value,
+) -> String {
+    serde_json::to_string(&KeysClaimBody {
+        timeout,
+        one_time_keys,
+    })
+    .unwrap_or_default()
+}
+
+pub(super) fn keys_query_body(
+    timeout: &Option<std::time::Duration>,
+    device_keys: &Value,
+) -> String {
+    serde_json::to_string(&KeysQueryBody {
+        timeout,
+        device_keys,
+    })
+    .unwrap_or_default()
+}
+
+/// `device_keys` is omitted when absent; an explicit `null` is not the same thing.
+fn keys_upload_body(req: &matrix_sdk::ruma::api::client::keys::upload_keys::v3::Request) -> String {
+    let mut body = json!({
+        "one_time_keys": req.one_time_keys,
+        "fallback_keys": req.fallback_keys,
+    });
+    if let Some(device_keys) = &req.device_keys {
+        body["device_keys"] = json!(device_keys);
+    }
+    body.to_string()
+}
+
+#[derive(Serialize)]
+pub(super) struct KeysQueryBody<'a> {
+    #[serde(with = "matrix_sdk::ruma::serde::duration::opt_ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout: &'a Option<std::time::Duration>,
+    device_keys: &'a Value,
+}
 
 pub async fn outgoing_requests(machine: &OlmMachine) -> Result<Value, String> {
     let requests = machine
@@ -35,27 +88,17 @@ pub async fn outgoing_requests(machine: &OlmMachine) -> Result<Value, String> {
                     AnyOutgoingRequest::KeysUpload(req) => json!({
                         "type": request_type::KEYS_UPLOAD,
                         "className": "KeysUploadRequest",
-                        "body": json!({
-                            "device_keys": req.device_keys,
-                            "one_time_keys": req.one_time_keys,
-                            "fallback_keys": req.fallback_keys,
-                        }).to_string(),
+                        "body": keys_upload_body(req),
                     }),
                     AnyOutgoingRequest::KeysQuery(req) => json!({
                         "type": request_type::KEYS_QUERY,
                         "className": "KeysQueryRequest",
-                        "body": json!({
-                            "timeout": req.timeout,
-                            "device_keys": req.device_keys,
-                        }).to_string(),
+                        "body": keys_query_body(&req.timeout, &json!(req.device_keys)),
                     }),
                     AnyOutgoingRequest::KeysClaim(req) => json!({
                         "type": request_type::KEYS_CLAIM,
                         "className": "KeysClaimRequest",
-                        "body": json!({
-                            "timeout": req.timeout,
-                            "one_time_keys": req.one_time_keys,
-                        }).to_string(),
+                        "body": keys_claim_body(&req.timeout, &json!(req.one_time_keys)),
                     }),
                     AnyOutgoingRequest::ToDeviceRequest(req) => json!({
                         "type": request_type::TO_DEVICE,
@@ -134,4 +177,36 @@ pub async fn mark_request_sent(machine: &OlmMachine, args: &Value) -> Result<Val
     }
 
     Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::{KeysClaimBody, KeysQueryBody};
+
+    #[test]
+    fn claim_keys_timeout_is_millis_not_a_duration_struct() {
+        let timeout = Some(Duration::from_secs(10));
+        let body = serde_json::to_value(KeysClaimBody {
+            timeout: &timeout,
+            one_time_keys: &json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(body["timeout"], json!(10_000));
+    }
+
+    #[test]
+    fn absent_timeout_is_omitted_rather_than_null() {
+        let body = serde_json::to_value(KeysQueryBody {
+            timeout: &None,
+            device_keys: &json!({}),
+        })
+        .unwrap();
+
+        assert!(!body.as_object().unwrap().contains_key("timeout"), "{body}");
+    }
 }

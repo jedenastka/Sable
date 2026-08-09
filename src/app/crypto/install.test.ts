@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isTauri } from '@tauri-apps/api/core';
-import { LegacyWasmCryptoStoreError, rustEngineEnabled } from './install';
+import { EventEmitter } from 'events';
+import { CryptoEvent } from 'matrix-js-sdk/lib/crypto-api';
+import { LegacyWasmCryptoStoreError, reEmitCryptoEvents, rustEngineEnabled } from './install';
 
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: vi.fn<() => boolean>() }));
 
@@ -50,5 +52,25 @@ describe('rustEngineEnabled', () => {
     await expect(rustEngineEnabled('sync@alice:example.org')).rejects.toBeInstanceOf(
       LegacyWasmCryptoStoreError
     );
+  });
+});
+
+describe('reEmitCryptoEvents', () => {
+  it('forwards SDK crypto events to MatrixClient and detaches them on stop', () => {
+    const mx = new EventEmitter();
+    const rustCrypto = new EventEmitter();
+    const listener = vi.fn<(request: unknown) => void>();
+    mx.on(CryptoEvent.VerificationRequestReceived, listener);
+
+    const stop = reEmitCryptoEvents(mx as never, rustCrypto as never);
+    const request = { transactionId: 'verification-request' };
+    rustCrypto.emit(CryptoEvent.VerificationRequestReceived, request);
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(request, rustCrypto);
+
+    stop();
+    rustCrypto.emit(CryptoEvent.VerificationRequestReceived, request);
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

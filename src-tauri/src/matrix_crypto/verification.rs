@@ -193,6 +193,7 @@ fn optional_outgoing(request: Option<OutgoingVerificationRequest>) -> Value {
 fn cancel_info(info: Option<CancelInfo>) -> Value {
     match info {
         Some(info) => json!({
+            "className": "CancelInfo",
             "cancelCode": info.cancel_code().to_string(),
             "cancelledbyUs": info.cancelled_by_us(),
             "reason": info.reason(),
@@ -279,7 +280,15 @@ fn qr_state(qr: &QrVerification) -> Value {
     })
 }
 
-fn request_state(request: &VerificationRequest) -> Value {
+fn verification_state(verification: Verification) -> Value {
+    match verification {
+        Verification::SasV1(sas) => sas_state(&sas),
+        Verification::QrV1(qr) => qr_state(&qr),
+        _ => Value::Null,
+    }
+}
+
+pub(crate) fn request_state(request: &VerificationRequest) -> Value {
     let state = request.state();
     let phase = match &state {
         VerificationRequestState::Created { .. } => 0,
@@ -441,6 +450,16 @@ pub async fn invoke(
         },
 
         "verificationRequest.state" => request(machine, args, method).map(|r| request_state(&r)),
+        "verification.state" => {
+            let (user, flow_id) = match flow(args, method) {
+                Ok(flow) => flow,
+                Err(e) => return Some(Err(e)),
+            };
+            Ok(machine
+                .get_verification(&user, &flow_id)
+                .map(verification_state)
+                .unwrap_or(Value::Null))
+        }
         "verificationRequest.accept" => {
             request(machine, args, method).and_then(|request| {
                 match args.get("methods").and_then(Value::as_array) {
@@ -516,11 +535,13 @@ pub async fn invoke(
             Ok(sas) => match sas.confirm().await {
                 Ok((requests, signature_upload)) => {
                     let mut out: Vec<Value> = requests.into_iter().map(outgoing).collect();
-                    // No `id`: that is how js-sdk knows to skip `markRequestAsSent`.
+                    // Null `id` tells js-sdk to skip `markRequestAsSent`. It must be present
+                    // and null: an absent key reaches the wasm `get id()` with no pointer.
                     if let Some(upload) = signature_upload {
                         out.push(json!({
                             "type": REQUEST_TYPE_SIGNATURE_UPLOAD,
                             "className": "SignatureUploadRequest",
+                            "id": Value::Null,
                             "body": json!(upload.signed_keys).to_string(),
                         }));
                     }
