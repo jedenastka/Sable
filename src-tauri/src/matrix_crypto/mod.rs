@@ -1,5 +1,6 @@
 //! Rust crypto engine: `OlmMachine`s on passphrase-protected sqlite stores.
 
+pub mod args;
 pub mod backup;
 pub mod bundles;
 pub mod cross_signing;
@@ -21,7 +22,11 @@ use matrix_sdk_sqlite::SqliteCryptoStore;
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
-/// Owned, open OlmMachines keyed by `"{user_id}|{device_id}"`.
+pub fn account_key(user_id: &str, device_id: &str) -> String {
+    format!("{user_id}|{device_id}")
+}
+
+/// Owned, open OlmMachines keyed by [`account_key`].
 #[derive(Default)]
 pub struct CryptoEngineState {
     machines: StdMutex<HashMap<String, Arc<OlmMachine>>>,
@@ -35,7 +40,7 @@ impl CryptoEngineState {
         self.machines
             .lock()
             .map_err(|e| e.to_string())?
-            .get(&format!("{user_id}|{device_id}"))
+            .get(&account_key(user_id, device_id))
             .cloned()
             .ok_or_else(|| format!("no open crypto engine for {user_id}|{device_id}"))
     }
@@ -79,7 +84,7 @@ fn store_dir(app: &tauri::AppHandle, user_id: &str, device_id: &str) -> Result<P
         .app_local_data_dir()
         .map_err(|e| format!("resolving app data dir failed: {e}"))?;
     // `/` and `:` in a user id are not path-safe.
-    let account = format!("{user_id}|{device_id}").replace(['/', ':'], "_");
+    let account = account_key(user_id, device_id).replace(['/', ':'], "_");
     Ok(base.join("matrix-crypto").join(account))
 }
 
@@ -107,7 +112,7 @@ pub async fn engine_open(
         .map_err(|e| e.to_string())?;
     let db_path = dir.join("matrix-sdk-crypto.sqlite3");
 
-    let account = format!("{user_id}|{device_id}");
+    let account = account_key(&user_id, &device_id);
     state.close_account(&account)?;
 
     let store = SqliteCryptoStore::open(&db_path, passphrase.as_deref())
@@ -146,7 +151,7 @@ pub async fn engine_close(
     user_id: String,
     device_id: String,
 ) -> Result<bool, String> {
-    state.close_account(&format!("{user_id}|{device_id}"))
+    state.close_account(&account_key(&user_id, &device_id))
 }
 
 #[tauri::command]
@@ -156,7 +161,7 @@ pub async fn engine_wipe(
     user_id: String,
     device_id: String,
 ) -> Result<(), String> {
-    let account = format!("{user_id}|{device_id}");
+    let account = account_key(&user_id, &device_id);
     let _ = state.close_account(&account)?;
 
     let dir = store_dir(&app, &user_id, &device_id)?;

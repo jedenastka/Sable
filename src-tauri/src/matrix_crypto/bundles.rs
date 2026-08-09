@@ -6,47 +6,21 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use matrix_sdk::ruma::events::room::EncryptedFile;
-use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk_crypto::dehydrated_devices::RehydratedDevice;
 use matrix_sdk_crypto::store::types::{
-    Changes, DehydratedDeviceKey, RoomKeyInfo, RoomPendingKeyBundleDetails, StoredRoomKeyBundleData,
+    Changes, DehydratedDeviceKey, RoomPendingKeyBundleDetails, StoredRoomKeyBundleData,
 };
 use matrix_sdk_crypto::types::events::room_key_bundle::RoomKeyBundleContent;
 use matrix_sdk_crypto::types::room_history::RoomKeyBundle;
 use matrix_sdk_crypto::{
-    AttachmentDecryptor, AttachmentEncryptor, CollectStrategy, DecryptionSettings,
-    MediaEncryptionInfo, OlmMachine, TrustRequirement,
+    AttachmentDecryptor, AttachmentEncryptor, CollectStrategy, MediaEncryptionInfo, OlmMachine,
 };
 use serde_json::{json, Map, Value};
 use zeroize::Zeroizing;
 
-use super::wasm_enums::encryption_algorithm;
+use super::args::{decryption_settings, room_id, str_arg, user_id};
+use super::events::room_key_json;
 use super::wasm_enums::request_type::TO_DEVICE as REQUEST_TYPE_TO_DEVICE;
-
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
-}
-
-fn user_id(
-    args: &Value,
-    method: &str,
-    field: &str,
-) -> Result<matrix_sdk::ruma::OwnedUserId, String> {
-    let raw = str_arg(args, method, field)?;
-    UserId::parse(&raw).map_err(|e| format!("{method}: bad user id in `{field}`: {e}"))
-}
-
-fn room_id(
-    args: &Value,
-    method: &str,
-    field: &str,
-) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
-    let raw = str_arg(args, method, field)?;
-    RoomId::parse(&raw).map_err(|e| format!("{method}: bad room id in `{field}`: {e}"))
-}
 
 /// Never put the key in an error: it would end up in a log line.
 fn dehydration_key(args: &Value, method: &str) -> Result<DehydratedDeviceKey, String> {
@@ -88,15 +62,6 @@ fn stored_bundle_json(data: &StoredRoomKeyBundleData) -> Result<Value, String> {
     }))
 }
 
-fn room_key_info_json(info: &RoomKeyInfo) -> Value {
-    json!({
-        "algorithm": encryption_algorithm(&info.algorithm),
-        "roomId": info.room_id.to_string(),
-        "senderKey": info.sender_key.to_base64(),
-        "sessionId": info.session_id,
-    })
-}
-
 /// Must persist across the paged `/dehydrated_device/{id}/events` fetches.
 type RehydratedDevices = Mutex<HashMap<String, (String, Arc<RehydratedDevice>)>>;
 
@@ -106,13 +71,7 @@ fn rehydrated_devices() -> &'static RehydratedDevices {
 }
 
 fn account_key(machine: &OlmMachine) -> String {
-    format!("{}|{}", machine.user_id(), machine.device_id())
-}
-
-fn decryption_settings() -> DecryptionSettings {
-    DecryptionSettings {
-        sender_device_trust_requirement: TrustRequirement::Untrusted,
-    }
+    super::account_key(machine.user_id().as_str(), machine.device_id().as_str())
 }
 
 pub async fn invoke(
@@ -458,7 +417,5 @@ async fn receive_dehydrated_events(
         .receive_events(events, &decryption_settings())
         .await
         .map_err(|e| format!("{method} failed: {e}"))?;
-    Ok(Value::Array(
-        room_keys.iter().map(room_key_info_json).collect(),
-    ))
+    Ok(Value::Array(room_keys.iter().map(room_key_json).collect()))
 }

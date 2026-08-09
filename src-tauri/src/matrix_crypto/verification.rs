@@ -15,22 +15,14 @@ use matrix_sdk_crypto::{
 };
 use serde_json::{json, Value};
 
+use super::args::{str_arg, user_id};
 use super::wasm_enums::request_type::{
     ROOM_MESSAGE as REQUEST_TYPE_ROOM_MESSAGE, SIGNATURE_UPLOAD as REQUEST_TYPE_SIGNATURE_UPLOAD,
     TO_DEVICE as REQUEST_TYPE_TO_DEVICE,
 };
 
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
-}
-
 fn flow(args: &Value, method: &str) -> Result<(OwnedUserId, String), String> {
-    let raw = str_arg(args, method, "userId")?;
-    let user =
-        UserId::parse(&raw).map_err(|e| format!("{method}: bad user id in `userId`: {e}"))?;
+    let user = user_id(args, method, "userId")?;
     Ok((user, str_arg(args, method, "flowId")?))
 }
 

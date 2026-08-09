@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use matrix_sdk::ruma::api::client::keys::upload_signatures::v3::Request as SignatureUploadRequest;
-use matrix_sdk::ruma::{OwnedDeviceId, OwnedUserId, UserId};
+use matrix_sdk::ruma::{OwnedDeviceId, UserId};
 use matrix_sdk_crypto::types::Signatures;
 use matrix_sdk_crypto::{
     CollectStrategy, Device, LocalTrust, OlmMachine, UserDevices, UserIdentity,
@@ -12,19 +12,8 @@ use matrix_sdk_crypto::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::args::{str_arg, user_id};
 use super::wasm_enums::{encryption_algorithm, request_type};
-
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
-}
-
-fn user_id(args: &Value, method: &str) -> Result<OwnedUserId, String> {
-    let raw = str_arg(args, method, "userId")?;
-    UserId::parse(&raw).map_err(|e| format!("{method}: bad user id in `userId`: {e}"))
-}
 
 fn device_id(args: &Value, method: &str) -> Result<OwnedDeviceId, String> {
     Ok(str_arg(args, method, "deviceId")?.into())
@@ -135,7 +124,7 @@ async fn device_for(
     args: &Value,
     method: &str,
 ) -> Result<Option<Device>, String> {
-    let user = user_id(args, method)?;
+    let user = user_id(args, method, "userId")?;
     let device = device_id(args, method)?;
     machine
         .get_device(&user, &device, timeout(args))
@@ -148,7 +137,7 @@ async fn identity_for(
     args: &Value,
     method: &str,
 ) -> Result<Option<UserIdentity>, String> {
-    let user = user_id(args, method)?;
+    let user = user_id(args, method, "userId")?;
     machine
         .get_identity(&user, timeout(args))
         .await
@@ -167,7 +156,7 @@ async fn get_user_devices(
     args: &Value,
     method: &str,
 ) -> Result<Value, String> {
-    let user = user_id(args, method)?;
+    let user = user_id(args, method, "userId")?;
     let devices = machine
         .get_user_devices(&user, timeout(args))
         .await

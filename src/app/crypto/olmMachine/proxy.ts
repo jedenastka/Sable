@@ -1,6 +1,12 @@
 import { createDebugLogger } from '$utils/debugLogger';
 import { engineClose } from '$generated/tauri/commands';
-import { graftWasmPrototypes, RustSdkCryptoJs } from './wasmClasses';
+import {
+  encodeDecryptionSettings,
+  encodeEncryptionSettings,
+  graftWasmPrototypes,
+  keyToBase64,
+  RustSdkCryptoJs,
+} from './wasmClasses';
 import { engineInvoke, type EngineIdentity } from './engineInvoke';
 import type { HydrationContext } from './hydrate';
 
@@ -36,6 +42,11 @@ type WatchedFlow = {
   request?: Record<string, unknown>;
   sas?: Record<string, unknown>;
   qr?: Record<string, unknown>;
+};
+
+const VERIFICATION_SLOT: Record<string, 'sas' | 'qr' | undefined> = {
+  Sas: 'sas',
+  Qr: 'qr',
 };
 
 const VERIFICATION_MUTATION_PREFIXES = [
@@ -162,29 +173,19 @@ export class OlmMachineProxy {
 
     const nestedRaw = raw.verification as Record<string, unknown> | null | undefined;
     if (nestedRaw && typeof nestedRaw === 'object') {
-      if (nestedRaw.className === 'Sas') {
-        if (watched.sas) {
-          patchSnapshot(watched.sas, nestedRaw, ['className', 'flowId']);
+      const slot = VERIFICATION_SLOT[nestedRaw.className as string];
+      if (slot) {
+        const current = watched[slot];
+        if (current) {
+          patchSnapshot(current, nestedRaw, ['className', 'flowId']);
         } else {
-          watched.sas = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
+          watched[slot] = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
             string,
             unknown
           >;
         }
         if (watched.request) {
-          defineMethodField(watched.request, 'getVerification', watched.sas);
-        }
-      } else if (nestedRaw.className === 'Qr') {
-        if (watched.qr) {
-          patchSnapshot(watched.qr, nestedRaw, ['className', 'flowId']);
-        } else {
-          watched.qr = graftWasmPrototypes({ ...nestedRaw }, this.#hydration) as Record<
-            string,
-            unknown
-          >;
-        }
-        if (watched.request) {
-          defineMethodField(watched.request, 'getVerification', watched.qr);
+          defineMethodField(watched.request, 'getVerification', watched[slot]);
         }
       }
     } else if (watched.request) {
@@ -259,7 +260,7 @@ export class OlmMachineProxy {
     return this.#call('decryptRoomEvent', {
       event,
       roomId: String(roomId),
-      decryptionSettings: rest.at(-1) ?? null,
+      decryptionSettings: encodeDecryptionSettings(rest.at(-1)),
     });
   }
 
@@ -294,7 +295,7 @@ export class OlmMachineProxy {
     return this.#call('shareRoomKey', {
       roomId: String(roomId),
       users: toStringArray(users),
-      encryptionSettings,
+      encryptionSettings: encodeEncryptionSettings(encryptionSettings),
     });
   }
 
@@ -403,7 +404,7 @@ export class OlmMachineProxy {
 
   async saveBackupDecryptionKey(decryptionKey: unknown, version: string): Promise<void> {
     await this.#call('saveBackupDecryptionKey', {
-      decryptionKey: String(decryptionKey),
+      decryptionKey: keyToBase64(decryptionKey),
       version,
     });
   }
@@ -557,19 +558,31 @@ export class OlmMachineProxy {
     const call = (method: string, args: Record<string, unknown> = {}) =>
       this.#call(`dehydratedDevices.${method}`, args);
     return {
-      create: () => call('create'),
-      keysForUpload: (deviceDisplayName: string, key: unknown) =>
-        call('keysForUpload', { deviceDisplayName, key: String(key) }),
-      rehydrate: (key: unknown, deviceId: unknown, deviceData: string) =>
-        call('rehydrate', {
-          key: String(key),
+      // js-sdk calls `(await create()).keysForUpload(...)`; the engine creates the device
+      // inside `keysForUpload`, so `create` only has to carry the handle.
+      create: async () => ({
+        keysForUpload: (initialDeviceDisplayName: string, key: unknown) =>
+          call('keysForUpload', {
+            initialDeviceDisplayName,
+            dehydratedDeviceKey: keyToBase64(key),
+          }),
+      }),
+      rehydrate: async (key: unknown, deviceId: unknown, deviceData: string) => {
+        const device = (await call('rehydrate', {
+          dehydratedDeviceKey: keyToBase64(key),
           deviceId: String(deviceId),
           deviceData,
-        }),
+        })) as { deviceId: string };
+        return {
+          ...device,
+          receiveEvents: (toDeviceEvents: string) =>
+            call('receiveEvents', { deviceId: device.deviceId, toDeviceEvents }),
+        };
+      },
       getDehydratedDeviceKey: () => call('getDehydratedDeviceKey'),
       saveDehydratedDeviceKey: (key: unknown) =>
         call('saveDehydratedDeviceKey', {
-          key: String(key),
+          dehydratedDeviceKey: keyToBase64(key),
         }),
       deleteDehydratedDeviceKey: () => call('deleteDehydratedDeviceKey'),
     };

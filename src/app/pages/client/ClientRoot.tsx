@@ -18,7 +18,7 @@ import {
   startClient,
   stopClient,
 } from '$client/initMatrix';
-import { isLegacyWasmCryptoStoreError } from '../../crypto/install';
+import { isLegacyWasmCryptoStoreError } from '$app/crypto/install';
 import { AsyncError } from '$components/AsyncError';
 import { clearSecretStorageKeys } from '$client/secretStorageKeys';
 import { resetBackupRestoreAtom } from '$state/backupRestore';

@@ -14,7 +14,7 @@ pub const ROOM_KEYS_WITHHELD: &str = "matrix-crypto://room-keys-withheld";
 pub const IDENTITIES_UPDATED: &str = "matrix-crypto://identities-updated";
 pub const SECRET_RECEIVED: &str = "matrix-crypto://secret-received";
 
-fn room_key_json(info: &RoomKeyInfo) -> Value {
+pub(super) fn room_key_json(info: &RoomKeyInfo) -> Value {
     json!({
         "algorithm": encryption_algorithm(&info.algorithm),
         "roomId": info.room_id.to_string(),

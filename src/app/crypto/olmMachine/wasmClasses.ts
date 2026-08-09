@@ -1,14 +1,64 @@
 import * as RustSdkCryptoJs from '@matrix-org/matrix-sdk-crypto-wasm';
 import { hydrate, type HydrationContext } from './hydrate';
 
-// Every payload carries a `className` because js-sdk dispatches on `instanceof`.
-type WasmClassName = keyof typeof RustSdkCryptoJs;
+// Wasm key objects hide their material behind `toBase64()`; `String()` gives `[object Object]`.
+export const keyToBase64 = (key: unknown): string => {
+  const encode = (key as { toBase64?: () => string } | null)?.toBase64;
+  return typeof encode === 'function' ? encode.call(key) : String(key);
+};
+
+// `CollectStrategy` exposes no getters, only `eq()`, so the variant has to be recovered by
+// comparison. Names are the ones `matrix_crypto::rooms::collect_strategy` parses.
+const COLLECT_STRATEGIES: ReadonlyArray<[string, () => unknown]> = [
+  ['identityBasedStrategy', () => RustSdkCryptoJs.CollectStrategy.identityBasedStrategy()],
+  ['onlyTrustedDevices', () => RustSdkCryptoJs.CollectStrategy.onlyTrustedDevices()],
+  [
+    'errorOnVerifiedUserProblem',
+    () => RustSdkCryptoJs.CollectStrategy.errorOnUnverifiedUserProblem(),
+  ],
+  ['allDevices', () => RustSdkCryptoJs.CollectStrategy.allDevices()],
+];
+
+export const collectStrategyName = (strategy: unknown): string => {
+  const candidate = strategy as { eq?: (other: unknown) => boolean } | null;
+  if (typeof candidate?.eq !== 'function') return 'allDevices';
+  for (const [name, build] of COLLECT_STRATEGIES) {
+    try {
+      if (candidate.eq(build())) return name;
+    } catch {
+      // Not a variant this wasm build exposes.
+    }
+  }
+  return 'allDevices';
+};
+
+// Wasm accessors live on the prototype, so JSON would carry only the internal pointer, and a
+// dropped `sharingStrategy` silently means "share room keys with every device".
+const num = (value: unknown) => (typeof value === 'bigint' ? Number(value) : value);
+
+export const encodeEncryptionSettings = (settings: unknown): Record<string, unknown> | null => {
+  if (settings === null || typeof settings !== 'object') return null;
+  const s = settings as Record<string, unknown>;
+  return {
+    algorithm: s.algorithm,
+    historyVisibility: s.historyVisibility,
+    rotationPeriod: num(s.rotationPeriod),
+    rotationPeriodMessages: num(s.rotationPeriodMessages),
+    sharingStrategy: collectStrategyName(s.sharingStrategy),
+  };
+};
+
+export const encodeDecryptionSettings = (settings: unknown): Record<string, unknown> => {
+  const trust = (settings as Record<string, unknown> | null)?.sender_device_trust_requirement;
+  return { senderDeviceTrustRequirement: typeof trust === 'number' ? trust : 0 };
+};
 
 const hasOwnPrototype = (name: string): boolean => {
   const candidate = (RustSdkCryptoJs as Record<string, unknown>)[name];
   return typeof candidate === 'function' && 'prototype' in candidate;
 };
 
+// Every payload carries a `className` because js-sdk dispatches on `instanceof`.
 export const graftWasmPrototypes = <T>(value: T, ctx: HydrationContext): T => {
   if (Array.isArray(value)) {
     value.forEach((item) => graftWasmPrototypes(item, ctx));
@@ -37,8 +87,5 @@ export const graftWasmPrototypes = <T>(value: T, ctx: HydrationContext): T => {
   }
   return value;
 };
-
-export const wasmClass = (name: WasmClassName): unknown =>
-  (RustSdkCryptoJs as Record<string, unknown>)[name as string];
 
 export { RustSdkCryptoJs };

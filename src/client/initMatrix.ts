@@ -35,7 +35,7 @@ import { pushSessionToSW } from '../sw-session';
 import { assertAuthMetadataIssuer, createSessionTokenRefresher } from './oidcTokenRefresher';
 import { revokeOAuthToken } from './oauthTokenRevocation';
 import { clearSecretStorageKeys, cryptoCallbacks } from './secretStorageKeys';
-import { installRustCrypto, rustEngineEnabled } from '../app/crypto/install';
+import { installRustCrypto, rustEngineEnabled } from '$app/crypto/install';
 import type { SlidingSyncDiagnostics } from './slidingSync';
 import {
   markExpandedTimelinesLimited,

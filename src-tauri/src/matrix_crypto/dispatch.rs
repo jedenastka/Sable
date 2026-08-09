@@ -9,34 +9,13 @@ use matrix_sdk::ruma::api::client::sync::sync_events::DeviceLists;
 use matrix_sdk::ruma::events::secret::request::SecretName;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::serde::Raw;
-use matrix_sdk::ruma::{DeviceKeyAlgorithm, OneTimeKeyAlgorithm, RoomId, UInt, UserId};
+use matrix_sdk::ruma::{DeviceKeyAlgorithm, OneTimeKeyAlgorithm, UInt, UserId};
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
-use matrix_sdk_crypto::{DecryptionSettings, EncryptionSyncChanges, OlmMachine, TrustRequirement};
+use matrix_sdk_crypto::{EncryptionSyncChanges, OlmMachine};
 use serde_json::{json, Value};
 
+use super::args::{caller_decryption_settings, decryption_settings, room_id, str_arg};
 use super::requests::{mark_request_sent, outgoing_requests};
-
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
-}
-
-fn room_id(
-    args: &Value,
-    method: &str,
-    field: &str,
-) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
-    let raw = str_arg(args, method, field)?;
-    RoomId::parse(&raw).map_err(|e| format!("{method}: bad room id in `{field}`: {e}"))
-}
-
-fn decryption_settings() -> DecryptionSettings {
-    DecryptionSettings {
-        sender_device_trust_requirement: TrustRequirement::Untrusted,
-    }
-}
 
 pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<Value, String> {
     match method {
@@ -154,7 +133,7 @@ pub async fn invoke(machine: &OlmMachine, method: &str, args: Value) -> Result<V
                 .map_err(|e| format!("decryptRoomEvent: bad event json: {e}"))?;
 
             let decrypted = machine
-                .decrypt_room_event(&event, &room, &decryption_settings())
+                .decrypt_room_event(&event, &room, &caller_decryption_settings(&args))
                 .await
                 .map_err(|e| format!("decryptRoomEvent failed: {e:?}"))?;
 

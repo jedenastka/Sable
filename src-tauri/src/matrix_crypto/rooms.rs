@@ -7,7 +7,7 @@ use matrix_sdk::deserialized_responses::{
 };
 use matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility;
 use matrix_sdk::ruma::serde::Raw;
-use matrix_sdk::ruma::{DeviceKeyAlgorithm, OwnedUserId, RoomId, UserId};
+use matrix_sdk::ruma::{DeviceKeyAlgorithm, OwnedUserId, UserId};
 use matrix_sdk_crypto::olm::EncryptionSettings;
 use matrix_sdk_crypto::store::types::RoomSettings;
 use matrix_sdk_crypto::types::events::room::encrypted::EncryptedEvent;
@@ -15,23 +15,8 @@ use matrix_sdk_crypto::types::EventEncryptionAlgorithm;
 use matrix_sdk_crypto::{CollectStrategy, OlmMachine};
 use serde_json::{json, Value};
 
+use super::args::{room_id, str_arg};
 use super::wasm_enums::{encryption_algorithm as algorithm_to_wasm, request_type};
-
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
-}
-
-fn room_id(
-    args: &Value,
-    method: &str,
-    field: &str,
-) -> Result<matrix_sdk::ruma::OwnedRoomId, String> {
-    let raw = str_arg(args, method, field)?;
-    RoomId::parse(&raw).map_err(|e| format!("{method}: bad room id in `{field}`: {e}"))
-}
 
 fn user_ids(args: &Value, method: &str, field: &str) -> Result<Vec<OwnedUserId>, String> {
     args.get(field)

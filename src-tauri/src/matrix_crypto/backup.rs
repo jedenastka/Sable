@@ -10,6 +10,7 @@ use matrix_sdk_crypto::types::RoomKeyBackupInfo;
 use matrix_sdk_crypto::{OlmMachine, RoomKeyImportResult};
 use serde_json::{json, Value};
 
+use super::args::str_arg;
 use super::wasm_enums::request_type::KEYS_BACKUP as REQUEST_TYPE_KEYS_BACKUP;
 
 pub async fn invoke(
@@ -22,13 +23,6 @@ pub async fn invoke(
         Ok(None) => None,
         Err(error) => Some(Err(error)),
     }
-}
-
-fn str_arg(args: &Value, method: &str, field: &str) -> Result<String, String> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{method}: missing string argument `{field}`"))
 }
 
 fn signature_state(state: SignatureState) -> u8 {
