@@ -4,6 +4,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import type { MatrixClient } from '$types/matrix-sdk';
 import { createDebugLogger } from '$utils/debugLogger';
 import { engineOpen } from '$generated/tauri/commands';
+import { RustSdkCryptoJs } from './olmMachine/wasmClasses';
 import { OlmMachineProxy, type EngineOpenInfo } from './olmMachine/proxy';
 import { engineInvoke } from './olmMachine/engineInvoke';
 import { startEngineEventBridge } from './olmMachine/eventBridge';
@@ -52,6 +53,10 @@ export const installRustCrypto = async (
   mx: MatrixClient,
   options: { storeDir?: string; passphrase?: string } = {}
 ): Promise<InstallResult> => {
+  // js-sdk does this inside `initRustCrypto`, which the engine bypasses. Without it the
+  // wasm classes the proxy grafts onto engine payloads throw on their first real call.
+  await RustSdkCryptoJs.initAsync();
+
   patchQrCodeScan();
 
   const userId = mx.getUserId();
