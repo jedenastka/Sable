@@ -13,17 +13,26 @@ pub mod verification;
 pub mod wasm_enums;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 
 use matrix_sdk_crypto::OlmMachine;
 use matrix_sdk_sqlite::SqliteCryptoStore;
 use serde::Serialize;
-use tauri::{Manager as _, State};
+use tauri::Manager as _;
 
 pub fn account_key(user_id: &str, device_id: &str) -> String {
     format!("{user_id}|{device_id}")
+}
+
+static ENGINES: OnceLock<CryptoEngineState> = OnceLock::new();
+
+/// Process-global registry. Not Tauri-managed state: a push arriving while the app is
+/// cold has to reach the same machines without an `AppHandle`.
+pub fn engines() -> &'static CryptoEngineState {
+    ENGINES.get_or_init(CryptoEngineState::default)
 }
 
 /// Owned, open OlmMachines keyed by [`account_key`].
@@ -36,7 +45,7 @@ pub struct CryptoEngineState {
 }
 
 impl CryptoEngineState {
-    fn machine(&self, user_id: &str, device_id: &str) -> Result<Arc<OlmMachine>, String> {
+    pub fn machine(&self, user_id: &str, device_id: &str) -> Result<Arc<OlmMachine>, String> {
         self.machines
             .lock()
             .map_err(|e| e.to_string())?
@@ -45,7 +54,7 @@ impl CryptoEngineState {
             .ok_or_else(|| format!("no open crypto engine for {user_id}|{device_id}"))
     }
 
-    fn close_account(&self, account: &str) -> Result<bool, String> {
+    pub fn close_account(&self, account: &str) -> Result<bool, String> {
         if let Some(listeners) = self
             .listeners
             .lock()
@@ -88,81 +97,92 @@ fn store_dir(app: &tauri::AppHandle, user_id: &str, device_id: &str) -> Result<P
     Ok(base.join("matrix-crypto").join(account))
 }
 
+/// Opens a store and registers its machine, replacing any machine already open for the
+/// account. Tauri-free so a cold push can open the same store without an `AppHandle`.
+pub async fn open_machine(
+    dir: &Path,
+    passphrase: Option<&str>,
+    user_id: &str,
+    device_id: &str,
+) -> Result<(Arc<OlmMachine>, EngineInfo), String> {
+    let user: &matrix_sdk::ruma::UserId = user_id
+        .try_into()
+        .map_err(|e| format!("bad user id: {e}"))?;
+    let device: &matrix_sdk::ruma::DeviceId = device_id.into();
+
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let db_path = dir.join("matrix-sdk-crypto.sqlite3");
+
+    let account = account_key(user_id, device_id);
+    engines().close_account(&account)?;
+
+    let store = SqliteCryptoStore::open(&db_path, passphrase)
+        .await
+        .map_err(|e| format!("opening crypto store failed: {e}"))?;
+    let machine = Arc::new(
+        OlmMachine::with_store(user, device, Arc::new(store), None)
+            .await
+            .map_err(|e| format!("creating OlmMachine failed: {e}"))?,
+    );
+    let keys = machine.identity_keys();
+
+    engines()
+        .machines
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(account, Arc::clone(&machine));
+
+    let info = EngineInfo {
+        user_id: user_id.to_owned(),
+        device_id: device_id.to_owned(),
+        ed25519_key: keys.ed25519.to_base64(),
+        curve25519_key: keys.curve25519.to_base64(),
+        store_path: db_path.display().to_string(),
+    };
+    Ok((machine, info))
+}
+
 #[tauri::command]
 pub async fn engine_open(
     app: tauri::AppHandle,
-    state: State<'_, CryptoEngineState>,
     dir: Option<String>,
     passphrase: Option<String>,
     user_id: String,
     device_id: String,
 ) -> Result<EngineInfo, String> {
-    let user: &matrix_sdk::ruma::UserId = user_id
-        .as_str()
-        .try_into()
-        .map_err(|e| format!("bad user id: {e}"))?;
-    let device: &matrix_sdk::ruma::DeviceId = device_id.as_str().into();
-
     let dir = match dir {
         Some(dir) => PathBuf::from(dir),
         None => store_dir(&app, &user_id, &device_id)?,
     };
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let db_path = dir.join("matrix-sdk-crypto.sqlite3");
+
+    let (machine, info) = open_machine(&dir, passphrase.as_deref(), &user_id, &device_id).await?;
 
     let account = account_key(&user_id, &device_id);
-    state.close_account(&account)?;
-
-    let store = SqliteCryptoStore::open(&db_path, passphrase.as_deref())
-        .await
-        .map_err(|e| format!("opening crypto store failed: {e}"))?;
-    let machine = OlmMachine::with_store(user, device, Arc::new(store), None)
-        .await
-        .map_err(|e| format!("creating OlmMachine failed: {e}"))?;
-    let keys = machine.identity_keys();
-
     let listeners = events::spawn(&app, &machine, account.clone());
-    state
+    engines()
         .listeners
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(account.clone(), listeners);
+        .insert(account, listeners);
 
-    state
-        .machines
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(account, Arc::new(machine));
-
-    Ok(EngineInfo {
-        user_id,
-        device_id,
-        ed25519_key: keys.ed25519.to_base64(),
-        curve25519_key: keys.curve25519.to_base64(),
-        store_path: db_path.display().to_string(),
-    })
+    Ok(info)
 }
 
 #[tauri::command]
-pub async fn engine_close(
-    state: State<'_, CryptoEngineState>,
-    user_id: String,
-    device_id: String,
-) -> Result<bool, String> {
-    state.close_account(&account_key(&user_id, &device_id))
+pub async fn engine_close(user_id: String, device_id: String) -> Result<bool, String> {
+    engines().close_account(&account_key(&user_id, &device_id))
 }
 
 #[tauri::command]
 pub async fn engine_wipe(
     app: tauri::AppHandle,
-    state: State<'_, CryptoEngineState>,
     user_id: String,
     device_id: String,
 ) -> Result<(), String> {
     let account = account_key(&user_id, &device_id);
-    let _ = state.close_account(&account)?;
+    let _ = engines().close_account(&account)?;
 
     let dir = store_dir(&app, &user_id, &device_id)?;
     if dir.exists() {
@@ -175,13 +195,12 @@ pub async fn engine_wipe(
 
 #[tauri::command]
 pub async fn engine_invoke(
-    state: State<'_, CryptoEngineState>,
     user_id: String,
     device_id: String,
     method: String,
     args_json: String,
 ) -> Result<String, String> {
-    let machine = state.machine(&user_id, &device_id)?;
+    let machine = engines().machine(&user_id, &device_id)?;
     let args: serde_json::Value = serde_json::from_str(&args_json)
         .map_err(|e| format!("engine_invoke({method}): bad args json: {e}"))?;
 

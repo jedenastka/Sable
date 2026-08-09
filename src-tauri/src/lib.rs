@@ -346,9 +346,6 @@ pub fn run() {
         desktop::windows::window_tracking::TrackingState::new(),
     ));
 
-    #[cfg(feature = "matrix-crypto")]
-    let builder = builder.manage(matrix_crypto::CryptoEngineState::default());
-
     let builder = builder.plugin(tauri_plugin_notifications::init());
 
     #[cfg(all(desktop, feature = "updater"))]
