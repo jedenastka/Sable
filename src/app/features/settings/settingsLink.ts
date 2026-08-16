@@ -49,6 +49,8 @@ export const settingsLinkFocusIdsBySection: Record<SettingsSectionId, readonly s
     'presence-status',
     'reply-notifications',
     'right-aligned-bubbles',
+    'never-collapse-messages',
+    'display-avatars',
     'right-swipe-action',
     'session-replay',
     'capture-diagnostics',
