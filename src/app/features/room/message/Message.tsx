@@ -571,8 +571,8 @@ function MessageInternal(
                 : 'Row'
             }
             justifyContent="SpaceBetween"
+            alignItems={messageLayout === MessageLayout.Compact ? "Center" : "Baseline"}
             grow="Yes"
-            alignItems="Center"
           >
             <Box
               alignItems="Center"
@@ -674,7 +674,7 @@ function MessageInternal(
           <Avatar
             className={css.MessageAvatar}
             as="button"
-            size="200"
+            size={messageLayout === MessageLayout.Compact ? "200" : "300"}
             data-user-id={senderId}
             data-parent-message-id={mEvent.getId() ?? ':3'}
             onClick={onUserClick}
@@ -764,7 +764,7 @@ function MessageInternal(
   const msgContentJSX = (
     <Box
       direction="Column"
-      alignSelf="Center"
+      alignSelf={messageLayout === MessageLayout.Compact ? "Center" : "Start"}
       style={MSG_CONTENT_STYLE}
       className={classNames({
         [css.MessagePending]: isPendingSend,
