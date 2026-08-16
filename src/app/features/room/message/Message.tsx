@@ -764,7 +764,7 @@ function MessageInternal(
   const msgContentJSX = (
     <Box
       direction="Column"
-      alignSelf="Start"
+      alignSelf="Center"
       style={MSG_CONTENT_STYLE}
       className={classNames({
         [css.MessagePending]: isPendingSend,
