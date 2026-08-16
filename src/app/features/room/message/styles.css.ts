@@ -176,7 +176,7 @@ export const MessageMobileDragIndicator = style({
 });
 
 export const BubbleAvatarBase = style({
-  paddingTop: 0,
+  paddingTop: '0 !important',
 });
 
 export const MessageAvatar = style({
