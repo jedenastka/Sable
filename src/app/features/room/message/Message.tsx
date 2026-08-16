@@ -532,6 +532,7 @@ function MessageInternal(
   const [parsePronouns] = useSetting(settingsAtom, 'parsePronouns');
 
   const [useRightBubbles] = useSetting(settingsAtom, 'useRightBubbles');
+  const [neverCollapseMessages] = useSetting(settingsAtom, 'neverCollapseMessages');
   const { cleanedDisplayName, inlinePronoun } = useMemo(() => {
     const rawName = pmp?.displayname || resolvedSenderDisplayName || '';
     return getParsedPronouns(rawName, parsePronouns);
@@ -555,7 +556,7 @@ function MessageInternal(
   }, [pronouns, inlinePronoun]);
 
   const headerJSX = (collapsed?: boolean) => {
-    if (!collapsed)
+    if (!collapsed || (messageLayout == MessageLayout.Compact && getSettings().neverCollapseMessages))
       return (
         <Box
           gap="300"

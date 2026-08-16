@@ -796,6 +796,7 @@ function Messages() {
 
   const [messageLayout] = useSetting(settingsAtom, 'messageLayout');
   const [rightBubbles, setRightBubbles] = useSetting(settingsAtom, 'useRightBubbles');
+  const [neverCollapseMessages, setNeverCollapseMessages] = useSetting(settingsAtom, 'neverCollapseMessages');
   return (
     <Box direction="Column" gap="100">
       <Text size="L400">Messages</Text>
@@ -834,6 +835,16 @@ function Messages() {
             focusId="right-aligned-bubbles"
             description="While using bubble layout, have your bubbles right aligned."
             after={<Switch variant="Primary" value={rightBubbles} onChange={setRightBubbles} />}
+          />
+        </SequenceCard>
+      )}
+      {messageLayout === MessageLayout.Compact && (
+        <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
+          <SettingTile
+            title="Never collapse messages"
+            focusId="never-collapse-messages"
+            description="While using compact layout, do not collapse messages into groups."
+            after={<Switch variant="Primary" value={neverCollapseMessages} onChange={setNeverCollapseMessages} />}
           />
         </SequenceCard>
       )}

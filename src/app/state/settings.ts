@@ -134,6 +134,7 @@ export interface Settings {
   composerToolbarOpen: boolean;
   alwaysInlineEditor: boolean;
   messageLayout: MessageLayout;
+  neverCollapseMessages: boolean;
   messageSpacing: MessageSpacing;
   hideMembershipEvents: boolean;
   hideNickAvatarEvents: boolean;
@@ -321,6 +322,7 @@ export const defaultSettings: Settings = {
   composerToolbarOpen: false,
   alwaysInlineEditor: false,
   messageLayout: 0,
+  neverCollapseMessages: true,
   messageSpacing: '400',
   hideMembershipEvents: false,
   hideNickAvatarEvents: true,
