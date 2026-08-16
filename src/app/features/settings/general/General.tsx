@@ -797,6 +797,7 @@ function Messages() {
   const [messageLayout] = useSetting(settingsAtom, 'messageLayout');
   const [rightBubbles, setRightBubbles] = useSetting(settingsAtom, 'useRightBubbles');
   const [neverCollapseMessages, setNeverCollapseMessages] = useSetting(settingsAtom, 'neverCollapseMessages');
+  const [compactDisplayAvatars, setCompactDisplayAvatars] = useSetting(settingsAtom, 'compactDisplayAvatars');
   return (
     <Box direction="Column" gap="100">
       <Text size="L400">Messages</Text>
@@ -839,14 +840,24 @@ function Messages() {
         </SequenceCard>
       )}
       {messageLayout === MessageLayout.Compact && (
-        <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
-          <SettingTile
-            title="Never collapse messages"
-            focusId="never-collapse-messages"
-            description="While using compact layout, do not collapse messages into groups."
-            after={<Switch variant="Primary" value={neverCollapseMessages} onChange={setNeverCollapseMessages} />}
-          />
-        </SequenceCard>
+        <>
+          <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
+            <SettingTile
+              title="Never collapse messages"
+              focusId="never-collapse-messages"
+              description="While using compact layout, do not collapse messages into groups."
+              after={<Switch variant="Primary" value={neverCollapseMessages} onChange={setNeverCollapseMessages} />}
+            />
+          </SequenceCard>
+          <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
+            <SettingTile
+              title="Display avatars"
+              focusId="display-avatars"
+              description="While using compact layout, display user avatars."
+              after={<Switch variant="Primary" value={compactDisplayAvatars} onChange={setCompactDisplayAvatars} />}
+            />
+          </SequenceCard>
+        </>
       )}
       <SettingToggle
         title="Disable Media Auto Load"

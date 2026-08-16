@@ -135,6 +135,7 @@ export interface Settings {
   alwaysInlineEditor: boolean;
   messageLayout: MessageLayout;
   neverCollapseMessages: boolean;
+  compactDisplayAvatars: boolean;
   messageSpacing: MessageSpacing;
   hideMembershipEvents: boolean;
   hideNickAvatarEvents: boolean;
@@ -323,6 +324,7 @@ export const defaultSettings: Settings = {
   alwaysInlineEditor: false,
   messageLayout: 0,
   neverCollapseMessages: true,
+  compactDisplayAvatars: true,
   messageSpacing: '400',
   hideMembershipEvents: false,
   hideNickAvatarEvents: true,
